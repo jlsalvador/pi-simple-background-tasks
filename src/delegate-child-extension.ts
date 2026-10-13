@@ -30,7 +30,7 @@ import {
  * Package-owned delegate child extension.
  *
  * This runs inside every delegate child Pi process and is the package-owned
- * child guard. Anthropic routes load attribution first, and ambient mode may
+ * child guard. Ambient mode may
  * also execute discovered extensions; this guard remains
  * responsible for every isolation guarantee that cannot be enforced from the
  * parent:

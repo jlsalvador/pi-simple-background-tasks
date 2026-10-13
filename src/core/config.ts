@@ -2,7 +2,6 @@ export const PI_BG_FEATURE_VALUES = Object.freeze([
   'process',
   'delegate',
   'attested',
-  'attribution',
 ] as const);
 export type PiBackgroundFeature = (typeof PI_BG_FEATURE_VALUES)[number];
 
@@ -21,7 +20,6 @@ export interface PiBackgroundFeatureSelection {
   readonly process: true;
   readonly delegate: boolean;
   readonly attested: boolean;
-  readonly attribution: boolean;
 }
 
 export interface PiBackgroundConfig {
@@ -87,7 +85,6 @@ function parseFeatures(rawValue: string | undefined): PiBackgroundFeatureSelecti
     process: true,
     delegate: selected.has('delegate'),
     attested: selected.has('attested'),
-    attribution: selected.has('attribution'),
   });
 }
 
