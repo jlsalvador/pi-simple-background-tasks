@@ -52,7 +52,7 @@ import {
   type BackgroundTaskExtensionService,
 } from './core/extension-api.js';
 import type { BackgroundTaskForUi, TaskManagerResult } from './ui/background-tasks-manager.js';
-import { dockShortcutFooterHint, parseBackgroundTasksConfig } from './core/config.js';
+import { dockShortcutFooterHint, resolveBackgroundTasksConfig } from './core/config.js';
 import { LazyModule, SynchronousActivationCloseFence } from './core/lazy-module.js';
 
 /**
@@ -182,7 +182,7 @@ function renderPlainResult(result: TextToolResult, options: ToolRenderResultOpti
 }
 
 export default async function backgroundTasksExtension(pi: ExtensionAPI): Promise<void> {
-  const config = parseBackgroundTasksConfig();
+  const config = resolveBackgroundTasksConfig(process.cwd());
   const dockEntryHint = dockShortcutFooterHint(config.dockShortcut);
   const shellPolicy = initializeShellPolicy();
   const reloadShellOwner = getProcessReloadShellOwnerV1();
@@ -225,6 +225,7 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
       eventService.publishTerminal(task);
     },
     shellPolicy,
+    tasksDir: config.tasksDir,
     reloadShellOwner,
   });
   const eventService: BackgroundTaskExtensionService = installBackgroundTaskExtensionApi({
@@ -837,7 +838,7 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
   pi.registerTool<typeof BgRunParams, BgRunDetails>({
     name: 'bg_run',
     label: 'Background Run',
-    description: `Start a named long-running shell command in the background and return immediately with a task ID and output path. By default, completed, failed, or killed terminal state is delivered automatically as <background-task-notification> and starts a follow-up agent turn; do not sleep or poll merely to wait. Output is written to .pi/tasks and model-visible logs are bounded to ${formatSize(MAX_LOG_BYTES)}.`,
+    description: `Start a named long-running shell command in the background and return immediately with a task ID and output path. By default, completed, failed, or killed terminal state is delivered automatically as <background-task-notification> and starts a follow-up agent turn; do not sleep or poll merely to wait. Output is written to ${config.tasksDir} and model-visible logs are bounded to ${formatSize(MAX_LOG_BYTES)}.`,
     promptSnippet:
       'Start a named long-running shell command; default terminal notification wakes a follow-up turn, so yield instead of polling',
     promptGuidelines: [

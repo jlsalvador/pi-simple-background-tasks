@@ -41,8 +41,26 @@ Current authored ownership map:
 
 ## Runtime roots
 
-- Task runtime: `.pi/tasks/<session-id>-<pid>/` under the active project cwd.
+- Task runtime: `<agent-dir>/tasks/<session-id>-<pid>/`, defaulting to `~/.pi/agent/tasks/<session-id>-<pid>/`. Override the base directory with `tasksDir` in the extension config (see Configuration).
 - Published Pi entrypoints, in load order: `dist/extensions/anthropic-attribution.js`, then `dist/extensions/background-tasks.js`, via `package.json.pi.extensions`. Authoritative TypeScript remains under `extensions/` and `src/`; `npm run build:runtime` produces the shipped JavaScript closure.
+
+## Configuration
+
+The extension reads `pi-background-tasks.json`, following the PI extension-config pattern. The project file under `<cwd>/.pi/` overrides the global file under `<agent-dir>/extensions/`; absent keys keep their defaults.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `tasksDir` | string (path) | `<agent-dir>/tasks` | Base directory for per-run task state. `~` is expanded; relative paths resolve against the config file's directory. |
+| `dockShortcut` | `"shift+down"` \| `"ctrl+alt+b"` \| `"off"` | `"shift+down"` | Key that opens the background-tasks dock. |
+
+Example (`~/.pi/agent/extensions/pi-background-tasks.json`):
+```json
+{
+  "tasksDir": "~/pi-tasks"
+}
+```
+
+Invalid JSON, unknown keys, or out-of-range values fail loudly at extension load.
 
 ---
 

@@ -49,6 +49,7 @@ import {
   resolvePiLaunch,
   type PiLaunchSpec,
 } from './pi-launch.js';
+import { defaultTasksDir } from './config.js';
 import { BackgroundTaskExtensionServiceClosedError } from './extension-api.js';
 import {
   createReloadableShellExecutionV1,
@@ -214,6 +215,7 @@ export interface BackgroundTaskRegistryOptions {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
   shellPolicy?: ResolvedShellPolicy;
+  tasksDir?: string | undefined;
   makeTaskId?: () => string;
   now?: () => number;
   maxOutputBytes?: number;
@@ -242,10 +244,6 @@ function defaultTaskId(): string {
   return `b${randomBytes(4).toString('hex')}`;
 }
 
-function dirNameFromDisplay(path: string): string {
-  const parts = path.split(/[\\/]/);
-  return parts.length >= 2 ? (parts.at(-2) ?? '') : '';
-}
 
 export function commandMayLaunchPiAgent(
   command: string,
@@ -752,6 +750,7 @@ function noopOnChange(): void {
 export class BackgroundTaskRegistry {
   private readonly tasks = new Map<string, BgTask>();
   private runtimeDir: RuntimeDir | undefined;
+  private readonly tasksDir: string;
   private shuttingDown = false;
   private taskAdmissionsClosed = false;
   private readonly activeTaskAdmissions = new Set<TaskAdmission>();
@@ -800,6 +799,7 @@ export class BackgroundTaskRegistry {
     this.platform = options.platform ?? process.platform;
     this.env = options.env ?? process.env;
     this.shellPolicy = options.shellPolicy;
+    this.tasksDir = options.tasksDir ?? defaultTasksDir();
     this.shellPolicyEnv = options.shellPolicy === undefined ? { ...this.env } : undefined;
     const taskkillEnv = this.env;
     this.killTree =
@@ -1199,10 +1199,9 @@ export class BackgroundTaskRegistry {
     if (this.runtimeDir) return this.runtimeDir;
     const sessionId = sanitizePathSegment(ctx.sessionId ?? `session-${String(process.pid)}`);
     const runId = `${sessionId}-${String(process.pid)}`;
-    const runtimeDirAbs = join(ctx.cwd, '.pi', 'tasks', runId);
-    const runtimeDirDisplay = join('.pi', 'tasks', runId);
+    const runtimeDirAbs = join(this.tasksDir, runId);
     await mkdir(runtimeDirAbs, { recursive: true });
-    this.runtimeDir = { abs: runtimeDirAbs, display: runtimeDirDisplay };
+    this.runtimeDir = { abs: runtimeDirAbs, display: runtimeDirAbs };
     return this.runtimeDir;
   }
 
