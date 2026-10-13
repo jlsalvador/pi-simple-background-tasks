@@ -138,7 +138,7 @@ const BgRunParams = Type.Object({
   surviveReload: Type.Optional(
     Type.Boolean({
       description:
-        'Opt in to retaining this exact ordinary isAgent:false shell execution across a real same-process Pi reload. Default: false. Unsupported for delegate tasks.',
+        'Opt in to retaining this exact shell execution across a real same-process Pi reload. Default: false.',
     }),
   ),
 });
@@ -366,29 +366,6 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
   });
 
 
-  if (config.features.delegate) {
-    const { registerDelegateExtension } = await import('./delegate-extension.js');
-    registerDelegateExtension(pi, {
-      startDelegateTask: async (ctx, options) => {
-        currentCtx = ctx;
-        const nextRegistryCtx = registryContext(ctx);
-        currentRegistryCtx = nextRegistryCtx;
-        return registry.startDelegateTask(nextRegistryCtx, options);
-      },
-      snapshot: (task) => registry.snapshot(task),
-      isDelegateTaskRegistered: (taskId) =>
-        registry.allTasks().some((task) => task.id === taskId && task.delegate !== undefined),
-      activationCloseFence,
-    });
-  }
-
-  if (config.features.delegate) {
-    const { registerBackgroundResultExtension } = await import('./delegate-extension.js');
-    registerBackgroundResultExtension(pi, {
-      resolveTask: (idOrPrefix) => registry.resolveTask(idOrPrefix),
-      activationCloseFence,
-    });
-  }
 
   function unseenFinishedTasks(): BgTask[] {
     return registry
@@ -503,11 +480,6 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
               return result;
             },
             rerunTask: async (task: BackgroundTaskForUi) => {
-              if (task.delegate !== undefined) {
-                throw new Error(
-                  'Only shell-command tasks can be rerun from the dock; relaunch this typed workflow through its owning tool.',
-                );
-              }
               const rerunOptions: StartTaskOptions = {
                 name: taskDisplayName(task),
                 isAgent: task.isAgent,

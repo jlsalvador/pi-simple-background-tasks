@@ -16,7 +16,6 @@ import {
   normalizeTaskName,
   parseAgentActivity,
   parseJsonText,
-  rejectSurvivalForTaskKind,
   resolveShellPolicy,
   sanitizePathSegment,
   shellInvocationForPolicy,
@@ -36,7 +35,6 @@ import {
   type ReloadShellOwnerHubV1,
   type ReloadableShellExecutionV1,
   type ResolvedShellPolicy,
-  type StartDelegateTaskOptions,
   type StartTaskOptions,
   type TaskContextUsage,
   type TaskStatus,
@@ -48,8 +46,6 @@ import {
 import { closeAndFsyncOutputStream, writeFileFsynced, writeJsonAtomic } from './task-durable.js';
 
 import {
-  assertWindowsCommandLineWithinLimit,
-  piLaunchArgv,
   resolvePiLaunch,
   type PiLaunchSpec,
 } from './pi-launch.js';
@@ -752,31 +748,6 @@ function noopOnChange(): void {
   return undefined;
 }
 
-/**
- * Deliver the delegate prompt bytes over stdin.
- *
- * A failure to deliver the seed is loud: the caller terminates the task rather
- * than letting a child run without the context it was supposed to receive.
- */
-function writeDelegateStdin(
-  child: BackgroundTaskChildProcess,
-  bytes: Buffer,
-  onError: (error: Error) => void,
-): void {
-  const stdin = child.stdin;
-  if (stdin === undefined || stdin === null) {
-    onError(new Error('delegate child stdin pipe is unavailable'));
-    return;
-  }
-  stdin.once('error', onError);
-  stdin.write(bytes, (error?: Error | null) => {
-    if (error !== undefined && error !== null) {
-      onError(error);
-      return;
-    }
-    stdin.end();
-  });
-}
 
 export class BackgroundTaskRegistry {
   private readonly tasks = new Map<string, BgTask>();
@@ -1787,193 +1758,6 @@ export class BackgroundTaskRegistry {
     }
   }
 
-  /**
-   * Track an in-process asynchronous workflow through the same durable task,
-   * notification, status, log, and cancellation surfaces as child processes.
-   * The supplied completion promise must own all workflow cleanup before it
-   * settles; terminal publication happens only after that settlement.
-   */
-
-  /**
-   * Start a prepared delegate child.
-   *
-   * The caller has already completed preflight, so by the time this runs the
-   * seed, budget plan, and artifact directory exist and the argv is fixed. The
-   * child is launched directly, never through a shell, and its terminal state
-   * flows through the same durable notification path as `bg_run`.
-   */
-  async startDelegateTask(
-    ctx: BackgroundTaskContext,
-    request: StartDelegateTaskOptions,
-  ): Promise<BgTask> {
-    rejectSurvivalForTaskKind(request, 'delegate tasks');
-    const admission = this.beginTaskAdmission('a delegate task');
-    try {
-      return await this.startDelegateTaskAdmitted(ctx, request, admission);
-    } finally {
-      this.releaseTaskAdmission(admission);
-    }
-  }
-
-  private async startDelegateTaskAdmitted(
-    ctx: BackgroundTaskContext,
-    request: StartDelegateTaskOptions,
-    admission: TaskAdmission,
-  ): Promise<BgTask> {
-    this.assertTaskAdmissionOpen('a delegate task', admission);
-    const launch = resolvePiLaunch({ platform: this.platform });
-    assertWindowsCommandLineWithinLimit(launch, request.argv, this.platform, 'bg-delegate');
-
-    const dir = await this.awaitTaskAdmissionBoundary(this.ensureRuntimeDir(ctx), admission);
-    this.assertTaskAdmissionOpen('a delegate task', admission);
-    const id = request.facts.taskId;
-    const outputAbsPath = join(dir.abs, `${id}.output`);
-    const metadataAbsPath = join(dir.abs, `${id}.json`);
-    const outputPath = join(dir.display, `${id}.output`);
-
-    const task: BgTask = {
-      id,
-      name: normalizeTaskName(request.name) ?? 'Delegate task',
-      command: ['pi', ...request.argv].map(shellQuote).join(' '),
-      status: 'running',
-      outputPath,
-      outputAbsPath,
-      metadataAbsPath,
-      cwd: ctx.cwd,
-      startTime: this.now(),
-      exitCode: undefined,
-      pid: undefined,
-      bytesWritten: 0,
-      isAgent: true,
-      surviveReload: false,
-      notified: false,
-      notifyOnCompletion: request.notifyOnCompletion,
-      triggerOnCompletion: request.triggerOnCompletion,
-      timeoutSeconds: request.timeoutSeconds,
-      model: request.facts.route.qualifiedId,
-      delegate: request.facts,
-      terminalPublished: false,
-      terminalPublicationState: 'pending',
-      terminalPublishAttempts: 0,
-      waiters: [],
-    };
-    this.assertTaskAdmissionOpen('a delegate task', admission);
-    this.tasks.set(id, task);
-
-    const stream = createWriteStream(outputAbsPath, { flags: 'a', encoding: 'utf8' });
-    task.stream = stream;
-    stream.on('error', (error) => {
-      task.error = `Output file write failed: ${error.message}`;
-    });
-
-    let unbindAdmissionCancellation = (): void => undefined;
-    try {
-      this.assertTaskAdmissionOpen('a delegate task', admission);
-      const child = this.spawn(launch.executable, piLaunchArgv(launch, [...request.argv]), {
-        cwd: ctx.cwd,
-        detached: this.platform !== 'win32',
-        shell: false,
-        // The seed travels over stdin, never as a shell or positional argument,
-        // so the bytes the child reads are exactly the bytes that were persisted
-        // and hashed, with no quoting or command-line length limit in the path.
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: request.env,
-        windowsHide: true,
-      });
-      this.captureSpawnedChild(task, child);
-
-      child.stdout?.on('data', (data) => {
-        this.appendChildOutput(task, data, 'stdout');
-      });
-      child.stderr?.on('data', (data) => {
-        this.appendChildOutput(task, data, 'stderr');
-      });
-      child.on('error', (error) => {
-        this.writeNotice(task, `\n[delegate spawn error: ${error.message}]\n`);
-        void this.finalizeTask(task, 'failed', null, undefined, error.message);
-      });
-      child.on('close', (code, signalName) => {
-        let status: TaskStatus;
-        let error: string | undefined;
-        if (task.killKind === 'user' || task.killKind === 'shutdown') {
-          status = 'killed';
-        } else if (task.killKind === 'timeout') {
-          status = 'failed';
-          error = task.error ?? `Timed out after ${String(request.timeoutSeconds ?? 0)}s`;
-        } else if ((code ?? 0) === 0) {
-          status = 'completed';
-        } else {
-          status = 'failed';
-          error = `Exited with code ${code === null ? 'null' : String(code)}${signalName ? ` (${signalName})` : ''}`;
-        }
-        void this.finalizeTask(task, status, code, signalName, error);
-      });
-
-      if (request.timeoutSeconds !== undefined) {
-        task.timeoutHandle = setTimeout(() => {
-          if (task.status !== 'running') return;
-          task.killKind = 'timeout';
-          task.error = `Timed out after ${String(request.timeoutSeconds)}s`;
-          this.writeNotice(task, `\n[delegate timeout: ${task.error}]\n`);
-          try {
-            this.requestKill(task, 'SIGTERM');
-          } catch (error) {
-            void this.finalizeTask(
-              task,
-              'failed',
-              null,
-              undefined,
-              `${task.error}; kill failed: ${error instanceof Error ? error.message : String(error)}`,
-            );
-          }
-        }, request.timeoutSeconds * 1000);
-      }
-
-      unbindAdmissionCancellation = this.bindOwnedTaskToAdmission(task, admission);
-      this.assertTaskAdmissionOpen('a delegate task', admission);
-      writeDelegateStdin(child, request.stdinBytes, (error) => {
-        this.writeNotice(task, `\n[delegate stdin write failed: ${error.message}]\n`);
-        if (task.status === 'running') {
-          task.killKind = 'user';
-          task.error = `Delegate seed could not be delivered: ${error.message}`;
-          try {
-            this.requestKill(task, 'SIGTERM');
-          } catch {
-            void this.finalizeTask(task, 'failed', null, undefined, task.error);
-          }
-        }
-      });
-
-      await this.awaitTaskAdmissionBoundary(
-        this.writeMetadata(task, admission.controller.signal),
-        admission,
-      );
-      this.assertTaskAdmissionOpen('a delegate task', admission);
-      this.onChange();
-      return task;
-    } catch (error) {
-      if (admission.controller.signal.aborted) {
-        const admissionError = this.taskAdmissionError(admission);
-        let cleanupError: unknown;
-        if (task.child === undefined) {
-          try {
-            await this.discardUnspawnedTask(task, [outputAbsPath, metadataAbsPath]);
-          } catch (cleanupFailure) {
-            cleanupError = cleanupFailure;
-          }
-        } else {
-          this.stopOwnedTaskAfterAdmissionCancellation(task, admissionError);
-        }
-        throw this.surfacedTaskAdmissionError(admission, error, cleanupError);
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      this.writeNotice(task, `\n[delegate spawn exception: ${message}]\n`);
-      await this.finalizeTask(task, 'failed', null, undefined, message);
-      throw new Error(`Failed to start delegate task: ${message}`);
-    } finally {
-      unbindAdmissionCancellation();
-    }
-  }
 
 
   resolveTask(idOrPrefix: string): BgTask {

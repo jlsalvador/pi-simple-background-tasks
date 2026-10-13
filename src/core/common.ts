@@ -3,7 +3,6 @@ import { open } from 'node:fs/promises';
 import { basename, delimiter, extname, isAbsolute, join, resolve, win32 } from 'node:path';
 import { DEFAULT_MAX_BYTES } from '@earendil-works/pi-coding-agent';
 import type { BackgroundTaskChildProcess } from './registry.js';
-import type { DelegateBudgetRouteSource, DelegateExtensionMode } from './delegate/types.js';
 
 export const TASK_STATUS_VALUES = ['running', 'completed', 'failed', 'killed'] as const;
 export const TERMINAL_TASK_STATUS_VALUES = ['completed', 'failed', 'killed'] as const;
@@ -42,13 +41,6 @@ export class ReloadSurvivalError extends Error {
   }
 }
 
-export function rejectSurvivalForTaskKind(value: object, kind: string): void {
-  if (!Object.prototype.hasOwnProperty.call(value, 'surviveReload')) return;
-  throw new ReloadSurvivalError(
-    'pi_bg_survive_reload_unsupported_task_kind',
-    `${kind} does not support surviveReload; only ordinary isAgent:false shell tasks may survive reload`,
-  );
-}
 
 export type JsonObject = Readonly<Record<PropertyKey, unknown>>;
 
@@ -246,34 +238,9 @@ export interface BgTaskSnapshot {
   telemetryUnavailableReason?: string | undefined;
   /** Immutable non-secret shell selection for ordinary shell tasks. */
   shellPolicy?: ShellPolicySnapshot | undefined;
-  delegate?: DelegateTaskFacts | undefined;
 }
 
 
-/** Delegate-specific task facts surfaced through snapshots and `bg_result`. */
-export interface DelegateTaskFacts {
-  taskId: string;
-  launchNonce: string;
-  artifactDir: string;
-  artifactDirAbs: string;
-  seedSha256: string;
-  childSessionId: string;
-  route: { provider: string; model: string; qualifiedId: string };
-  budget: DelegateBudgetRouteSource;
-  extensionMode: DelegateExtensionMode;
-  autoDeliver: 'never' | 'when_small' | 'always';
-  /** Set once the run reaches a terminal state and its result has been evaluated. */
-  outcome?: DelegateTaskOutcome | undefined;
-}
-
-export interface DelegateTaskOutcome {
-  status: 'committed' | 'failed' | 'cancelled';
-  errorCode?: string | undefined;
-  answerBytes?: number | undefined;
-  answerSha256?: string | undefined;
-  turns?: number | undefined;
-  toolCalls?: number | undefined;
-}
 
 
 export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
@@ -312,7 +279,6 @@ export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   /** Partial trailing stdout line held between chunks while reconstructing wrapped-agent control lines. */
   agentStdoutBuffer?: string | undefined;
   telemetryUnavailableReason?: string | undefined;
-  delegate?: DelegateTaskFacts | undefined;
   /** In-memory same-process authority for an opted ordinary shell task; never serialized. */
   reloadExecution?: ReloadableShellExecutionV1 | undefined;
   /** Fresh-registry terminal host delivery state for an imported owner execution. */
@@ -417,17 +383,6 @@ export interface StartTaskOptions {
 }
 
 
-export interface StartDelegateTaskOptions {
-  name: string;
-  argv: readonly string[];
-  /** Prompt bytes delivered over stdin, never as a shell or positional argument. */
-  stdinBytes: Buffer;
-  env: NodeJS.ProcessEnv;
-  facts: DelegateTaskFacts;
-  notifyOnCompletion: boolean;
-  triggerOnCompletion: boolean;
-  timeoutSeconds?: number | undefined;
-}
 
 
 export const DEFAULT_LOG_BYTES = Math.min(DEFAULT_MAX_BYTES, 50 * 1024);
@@ -1119,7 +1074,6 @@ export function snapshot(task: BgTask): BgTaskSnapshot {
     model: task.model,
     telemetryUnavailableReason: task.telemetryUnavailableReason,
     shellPolicy: task.shellPolicy,
-    delegate: task.delegate,
   };
 }
 
