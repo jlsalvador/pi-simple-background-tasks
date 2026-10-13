@@ -85,7 +85,8 @@ function lookupEnv(env: NodeJS.ProcessEnv, name: string): string | undefined {
 function validateWindowsRoot(raw: string, label: string): string {
   const value = raw.trim();
   if (value.length === 0) throw new Error(`${label} is empty; cannot resolve taskkill.exe`);
-  if (value.includes('\0')) throw new Error(`${label} contains a NUL byte; cannot resolve taskkill.exe`);
+  if (value.includes('\0'))
+    throw new Error(`${label} contains a NUL byte; cannot resolve taskkill.exe`);
   if (!win32.isAbsolute(value)) {
     throw new Error(`${label} must be an absolute Windows path; cannot resolve taskkill.exe`);
   }
@@ -103,12 +104,16 @@ export function resolveTaskkillPath(env: NodeJS.ProcessEnv = process.env): strin
     return win32.join(validateWindowsRoot(windir, 'WINDIR'), 'System32', 'taskkill.exe');
   }
 
-  throw new Error('Cannot resolve taskkill.exe: SystemRoot is missing and WINDIR fallback is missing');
+  throw new Error(
+    'Cannot resolve taskkill.exe: SystemRoot is missing and WINDIR fallback is missing',
+  );
 }
 
 function validatePid(pid: number): void {
   if (!Number.isSafeInteger(pid) || pid <= 0) {
-    throw new Error(`Invalid Windows taskkill pid ${String(pid)}; expected a positive safe integer`);
+    throw new Error(
+      `Invalid Windows taskkill pid ${String(pid)}; expected a positive safe integer`,
+    );
   }
 }
 
@@ -142,7 +147,11 @@ function outcome(
   };
 }
 
-function defaultSpawn(command: string, args: string[], options: SpawnOptions): WindowsTaskkillChildProcess {
+function defaultSpawn(
+  command: string,
+  args: string[],
+  options: SpawnOptions,
+): WindowsTaskkillChildProcess {
   return nodeSpawn(command, args, options);
 }
 
@@ -198,7 +207,9 @@ export function runWindowsTaskkill(
         try {
           child.kill('SIGKILL');
         } catch (error) {
-          stderr.append(`; helper kill failed: ${error instanceof Error ? error.message : String(error)}`);
+          stderr.append(
+            `; helper kill failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
         }
       }
       settle(outcome(null, null, stdout, stderr));
@@ -215,7 +226,9 @@ export function runWindowsTaskkill(
     try {
       child = spawn(taskkill, args, spawnOptions);
     } catch (error) {
-      stderr.append(`Windows taskkill spawn failed: ${error instanceof Error ? error.message : String(error)}`);
+      stderr.append(
+        `Windows taskkill spawn failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
       settle(outcome(null, null, stdout, stderr));
       return;
     }

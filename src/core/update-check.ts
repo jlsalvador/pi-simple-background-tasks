@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { isJsonObject, parseJsonText, type JsonObject } from './common.js';
+import { isJsonObject, type JsonObject, parseJsonText } from './common.js';
 
 /**
  * Typed, offline-safe boundary for the "update available" footer notice.

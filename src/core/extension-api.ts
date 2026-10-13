@@ -1,10 +1,10 @@
 import type { EventBus } from '@earendil-works/pi-coding-agent';
 import {
-  DEFAULT_LOG_BYTES,
-  normalizeMaxBytes,
   type BgLogsDetails,
   type BgTaskSnapshot,
+  DEFAULT_LOG_BYTES,
   type JsonObject,
+  normalizeMaxBytes,
   type StartTaskOptions,
 } from './common.js';
 import type { BackgroundTaskContext, BackgroundTaskRegistry } from './registry.js';
@@ -153,7 +153,7 @@ function isRecord(value: unknown): value is JsonRecord {
 }
 
 function hasOwn(record: JsonRecord, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(record, key);
+  return Object.hasOwn(record, key);
 }
 
 function assertClosed(record: JsonRecord, allowedKeys: readonly string[], label: string): void {
@@ -222,21 +222,21 @@ function parseRunPayload(value: unknown): BackgroundTaskExtensionRunPayload {
     'run.payload',
   );
   const out: BackgroundTaskExtensionRunPayload = {
-    name: requireNonEmptyString(payload['name'], 'run.payload.name'),
-    command: requireNonEmptyString(payload['command'], 'run.payload.command'),
-    isAgent: requireBoolean(payload['isAgent'], 'run.payload.isAgent'),
+    name: requireNonEmptyString(payload.name, 'run.payload.name'),
+    command: requireNonEmptyString(payload.command, 'run.payload.command'),
+    isAgent: requireBoolean(payload.isAgent, 'run.payload.isAgent'),
     notifyOnCompletion: requireBoolean(
-      payload['notifyOnCompletion'],
+      payload.notifyOnCompletion,
       'run.payload.notifyOnCompletion',
     ),
     triggerOnCompletion: requireBoolean(
-      payload['triggerOnCompletion'],
+      payload.triggerOnCompletion,
       'run.payload.triggerOnCompletion',
     ),
   };
   if (hasOwn(payload, 'timeoutSeconds')) {
     out.timeoutSeconds = requirePositiveInteger(
-      payload['timeoutSeconds'],
+      payload.timeoutSeconds,
       'run.payload.timeoutSeconds',
     );
   }
@@ -248,7 +248,7 @@ function parseStatusPayload(value: unknown): BackgroundTaskExtensionStatusPayloa
   assertClosed(payload, ['taskId'], 'status.payload');
   const out: BackgroundTaskExtensionStatusPayload = {};
   if (hasOwn(payload, 'taskId')) {
-    out.taskId = requireNonEmptyString(payload['taskId'], 'status.payload.taskId');
+    out.taskId = requireNonEmptyString(payload.taskId, 'status.payload.taskId');
   }
   return out;
 }
@@ -257,19 +257,19 @@ function parseLogsPayload(value: unknown): BackgroundTaskExtensionLogsPayload {
   const payload = requireRecord(value, 'logs.payload');
   assertClosed(payload, ['taskId', 'maxBytes', 'tail'], 'logs.payload');
   const out: BackgroundTaskExtensionLogsPayload = {
-    taskId: requireNonEmptyString(payload['taskId'], 'logs.payload.taskId'),
+    taskId: requireNonEmptyString(payload.taskId, 'logs.payload.taskId'),
   };
   if (hasOwn(payload, 'maxBytes')) {
-    out.maxBytes = requirePositiveInteger(payload['maxBytes'], 'logs.payload.maxBytes');
+    out.maxBytes = requirePositiveInteger(payload.maxBytes, 'logs.payload.maxBytes');
   }
-  if (hasOwn(payload, 'tail')) out.tail = requireBoolean(payload['tail'], 'logs.payload.tail');
+  if (hasOwn(payload, 'tail')) out.tail = requireBoolean(payload.tail, 'logs.payload.tail');
   return out;
 }
 
 function parseKillPayload(value: unknown): BackgroundTaskExtensionKillPayload {
   const payload = requireRecord(value, 'kill.payload');
   assertClosed(payload, ['taskId'], 'kill.payload');
-  return { taskId: requireNonEmptyString(payload['taskId'], 'kill.payload.taskId') };
+  return { taskId: requireNonEmptyString(payload.taskId, 'kill.payload.taskId') };
 }
 
 function parsePayload(
@@ -298,21 +298,21 @@ function parseRequest(data: unknown): ParsedRequest {
       error: 'request frame must be an object',
     };
   }
-  const requestId = requestIdEcho(data['request_id']);
-  const opEcho = operationEcho(data['operation']);
+  const requestId = requestIdEcho(data.request_id);
+  const opEcho = operationEcho(data.operation);
   try {
     assertClosed(data, ['schema_version', 'request_id', 'operation', 'payload'], 'request');
-    if (data['schema_version'] !== BG_REQUEST_SCHEMA)
+    if (data.schema_version !== BG_REQUEST_SCHEMA)
       throw new Error('request schema_version mismatch');
-    const parsedRequestId = requireNonEmptyString(data['request_id'], 'request.request_id');
+    const parsedRequestId = requireNonEmptyString(data.request_id, 'request.request_id');
     if (parsedRequestId.length > MAX_REQUEST_ID_CHARS) {
       throw new Error(
         `request.request_id must be at most ${String(MAX_REQUEST_ID_CHARS)} characters`,
       );
     }
-    const operation = requireOperation(data['operation'], 'request.operation');
+    const operation = requireOperation(data.operation, 'request.operation');
     if (!hasOwn(data, 'payload')) throw new Error('request.payload is required');
-    const payload = parsePayload(operation, data['payload']);
+    const payload = parsePayload(operation, data.payload);
     return {
       requestId: parsedRequestId,
       operationEcho: operation,

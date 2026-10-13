@@ -6,9 +6,7 @@ function signalError(signal: AbortSignal): Error {
   const reason: unknown = signal.reason;
   return reason instanceof Error
     ? reason
-    : new Error(
-        `Task admission cancelled${reason === undefined ? '' : `: ${String(reason)}`}`,
-      );
+    : new Error(`Task admission cancelled${reason === undefined ? '' : `: ${String(reason)}`}`);
 }
 
 function throwIfAborted(signal?: AbortSignal): void {

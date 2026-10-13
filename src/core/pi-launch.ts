@@ -1,5 +1,5 @@
-import { accessSync, constants, readFileSync, realpathSync, statSync } from 'node:fs';
 import type { Stats } from 'node:fs';
+import { accessSync, constants, readFileSync, realpathSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import {
   basename,
@@ -158,7 +158,7 @@ function parseManifest(raw: string | Buffer, manifestPath: string): JsonRecord {
 }
 
 function packageName(manifest: JsonRecord, manifestPath: string): string | undefined {
-  const name = manifest['name'];
+  const name = manifest.name;
   if (name === undefined) return undefined;
   if (typeof name !== 'string' || name.trim().length === 0) {
     throw new Error(`manifest name is malformed at ${manifestPath}`);
@@ -176,10 +176,10 @@ function requirePiPackageName(manifest: JsonRecord, manifestPath: string): void 
 }
 
 function readPiBin(manifest: JsonRecord, manifestPath: string): string {
-  const bin = manifest['bin'];
+  const bin = manifest.bin;
   if (typeof bin === 'string' && bin.trim().length > 0) return bin;
   if (isJsonRecord(bin)) {
-    const pi = bin['pi'];
+    const pi = bin.pi;
     if (typeof pi === 'string' && pi.trim().length > 0) return pi;
   }
   throw new Error(`manifest bin.pi is missing or malformed at ${manifestPath}`);
@@ -333,7 +333,9 @@ function resolveCompiledHostLaunch(
   // route only for the established Pi executable name.
   if (isGenericJavaScriptRuntime(execPath, platform) || !isNamedPiExecutable) return undefined;
 
-  const executableReal = pathOperation('compiled host realpath', execPath, () => io.realpath(execPath));
+  const executableReal = pathOperation('compiled host realpath', execPath, () =>
+    io.realpath(execPath),
+  );
   const executableStat = pathOperation('compiled host stat', executableReal, () =>
     io.stat(executableReal),
   );
@@ -357,12 +359,15 @@ function resolvePackageLaunch(
   platform: NodeJS.Platform,
   expectedHostReal?: string,
 ): PiLaunchSpec {
-  const manifestReal = pathOperation('manifest realpath', manifestPath, () => io.realpath(manifestPath));
+  const manifestReal = pathOperation('manifest realpath', manifestPath, () =>
+    io.realpath(manifestPath),
+  );
   if (basename(manifestReal).toLowerCase() !== 'package.json') {
     throw new Error(`resolved Pi manifest is not package.json: ${manifestReal}`);
   }
   const manifestStat = pathOperation('manifest stat', manifestReal, () => io.stat(manifestReal));
-  if (!manifestStat.isFile()) throw new Error(`Pi package manifest is not a regular file: ${manifestReal}`);
+  if (!manifestStat.isFile())
+    throw new Error(`Pi package manifest is not a regular file: ${manifestReal}`);
 
   const manifest = parseManifest(
     pathOperation('manifest read', manifestReal, () => io.readFile(manifestReal)),
@@ -381,7 +386,9 @@ function resolvePackageLaunch(
     isAbsolute(bin) ||
     (platform === 'win32' && (win32Path.isAbsolute(bin) || /^[a-z]:/i.test(bin)))
   )
-    throw new Error('Pi package bin target must not be absolute; it must be relative to the package root');
+    throw new Error(
+      'Pi package bin target must not be absolute; it must be relative to the package root',
+    );
   const targetCandidate = resolve(packageRootReal, bin);
   if (!pathInside(packageRootReal, targetCandidate)) {
     throw new Error('Pi package bin target path escapes the package root');
@@ -422,7 +429,7 @@ function resolveExecutableOnPosixPath(
   deps: PiLaunchDependencies,
   io: LaunchIo,
 ): { readonly launch?: PiLaunchSpec; readonly diagnostics: readonly string[] } {
-  const rawPath = deps.path ?? process.env['PATH'] ?? '';
+  const rawPath = deps.path ?? process.env.PATH ?? '';
   const diagnostics: string[] = [];
   if (rawPath.length === 0) diagnostics.push('PATH is empty');
   for (const entry of rawPath.split(delimiter)) {

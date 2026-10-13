@@ -64,8 +64,9 @@
     "smoke": "npm run build:runtime && tsx scripts/smoke.ts",
     "smoke:large-context": "tsx scripts/large-context-smoke.ts",
     "pack:dry-run": "npm pack --dry-run",
-    "lint": "cd ../.. && npm run quality:ts:lint",
-    "format:check": "cd ../.. && npm run quality:ts:format",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format:check": "biome format .",
     "test:compat": "npm run build:runtime && tsx scripts/test-compat.ts",
     "test:pnpm-pack": "npm run build:runtime && node scripts/test-pnpm-pack-install.mjs",
     "test:hook-contract": "tsx --test --test-concurrency=1 tests/scripted-provider/pi-hook-contract.test.ts",
@@ -92,6 +93,7 @@
     "typebox": "*"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
     "@earendil-works/pi-ai": "^0.84.0",
     "@earendil-works/pi-coding-agent": "^0.84.0",
     "@earendil-works/pi-tui": "^0.84.0",

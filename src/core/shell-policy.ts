@@ -4,8 +4,8 @@ import type {
   ExtensionAPI,
 } from '@earendil-works/pi-coding-agent';
 import {
-  resolveShellPolicy,
   type ResolvedShellPolicy,
+  resolveShellPolicy,
   type ShellPolicySnapshot,
 } from './common.js';
 
@@ -145,10 +145,10 @@ export function applyShellPolicyGuidance(
   const options = event.systemPromptOptions;
   if (options !== undefined && options !== null) {
     if (!promptObject(options)) throw unsupportedPrompt('systemPromptOptions');
-    const sections = options['sections'];
+    const sections = options.sections;
     if (sections !== undefined && sections !== null) {
       if (!promptObject(sections)) throw unsupportedPrompt('systemPromptOptions.sections');
-      const forced = options['forceSystemPrompt'];
+      const forced = options.forceSystemPrompt;
       if (forced !== undefined && typeof forced !== 'string') {
         throw unsupportedPrompt('systemPromptOptions.forceSystemPrompt');
       }
@@ -156,7 +156,7 @@ export function applyShellPolicyGuidance(
       // mutation contract, including forced prompts that hide structured sections.
       sections[SHELL_POLICY_SECTION] = shellPolicyGuidance(policy);
       if (typeof forced === 'string') {
-        options['forceSystemPrompt'] = upsertShellPolicyGuidance(forced, policy);
+        options.forceSystemPrompt = upsertShellPolicyGuidance(forced, policy);
       }
       return undefined;
     }

@@ -9,51 +9,51 @@ import type {
   ToolRenderResultOptions,
 } from '@earendil-works/pi-coding-agent';
 import { formatSize } from '@earendil-works/pi-coding-agent';
-import { Text, type KeyId } from '@earendil-works/pi-tui';
-import { Type, type Static } from 'typebox';
+import { type KeyId, Text } from '@earendil-works/pi-tui';
+import { type Static, Type } from 'typebox';
 import {
-  DEFAULT_LOG_BYTES,
-  MAX_LOG_BYTES,
-  deriveCompletionDeliveryGuidance,
-  deriveTaskNameFromCommand,
-  formatSnapshotList,
-  formatUpdateSegment,
-  isNewerVersion,
-  normalizeMaxBytes,
-  normalizeTaskName,
-  parseBgCommandArgs,
-  taskDisplayName,
-  truncateChars,
   type BgKillDetails,
   type BgLogsDetails,
   type BgRunDetails,
   type BgStatusDetails,
   type BgTask,
   type BgTaskSnapshot,
+  DEFAULT_LOG_BYTES,
+  deriveCompletionDeliveryGuidance,
+  deriveTaskNameFromCommand,
+  formatSnapshotList,
+  formatUpdateSegment,
+  isNewerVersion,
+  MAX_LOG_BYTES,
+  normalizeMaxBytes,
+  normalizeTaskName,
+  parseBgCommandArgs,
   type ReloadShellActivationClaimV1,
   type ReloadShellActivationLeaseV1,
   type ReloadShellIdentityV1,
-  type StartTaskOptions,
   ReloadSurvivalError,
+  type StartTaskOptions,
+  taskDisplayName,
+  truncateChars,
 } from './core/common.js';
+import { dockShortcutFooterHint, resolveBackgroundTasksConfig } from './core/config.js';
 import {
-  fetchLatestVersion,
-  readPackageInfo,
-  type FetchLatestVersionOptions,
-} from './core/update-check.js';
-import { BackgroundTaskRegistry, type BackgroundTaskContext } from './core/registry.js';
+  type BackgroundTaskExtensionService,
+  installBackgroundTaskExtensionApi,
+} from './core/extension-api.js';
+import { LazyModule, SynchronousActivationCloseFence } from './core/lazy-module.js';
+import { type BackgroundTaskContext, BackgroundTaskRegistry } from './core/registry.js';
 import {
   getProcessReloadShellOwnerV1,
   makeReloadShellIdentity,
 } from './core/reload-shell-owner.js';
 import { createShellPolicyGuidanceHandler, initializeShellPolicy } from './core/shell-policy.js';
 import {
-  installBackgroundTaskExtensionApi,
-  type BackgroundTaskExtensionService,
-} from './core/extension-api.js';
+  type FetchLatestVersionOptions,
+  fetchLatestVersion,
+  readPackageInfo,
+} from './core/update-check.js';
 import type { BackgroundTaskForUi, TaskManagerResult } from './ui/background-tasks-manager.js';
-import { dockShortcutFooterHint, resolveBackgroundTasksConfig } from './core/config.js';
-import { LazyModule, SynchronousActivationCloseFence } from './core/lazy-module.js';
 
 /**
  * Project-local Pi background task manager.
@@ -101,7 +101,6 @@ interface BgToolArgumentRecord {
   readonly surviveReload?: unknown;
 }
 
-
 function optionalTrimmed(value: string): string | undefined {
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
@@ -142,7 +141,6 @@ const BgRunParams = Type.Object({
     }),
   ),
 });
-
 
 const BgStatusParams = Type.Object({
   taskId: Type.Optional(
@@ -366,8 +364,6 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     }
   });
 
-
-
   function unseenFinishedTasks(): BgTask[] {
     return registry
       .allTasks()
@@ -449,7 +445,6 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     currentRegistryCtx = nextRegistryCtx;
     return registry.startTask(nextRegistryCtx, command, options);
   }
-
 
   async function openTaskManager(
     ctx: ExtensionCommandContext | ExtensionContext,
@@ -564,8 +559,8 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     if (disposed || updateCheckStarted) return;
     updateCheckStarted = true;
     const env = process.env;
-    if (env['PI_BG_DISABLE_UPDATE_CHECK'] === '1') return;
-    if (env['PI_OFFLINE'] === '1') return;
+    if (env.PI_BG_DISABLE_UPDATE_CHECK === '1') return;
+    if (env.PI_OFFLINE === '1') return;
     if (!PACKAGE_VERSION) return;
     const options: FetchLatestVersionOptions = {
       packageName: PACKAGE_NAME,
@@ -573,7 +568,7 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
         console.error(`[background-tasks] update check skipped: ${error.message}`);
       },
     };
-    const registryUrl = env['PI_BG_REGISTRY_URL'];
+    const registryUrl = env.PI_BG_REGISTRY_URL;
     if (registryUrl) options.registryUrl = registryUrl;
     const latest = await fetchLatestVersion(options);
     if (disposed) return;
@@ -861,10 +856,7 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
           'bg_run requires isAgent boolean. Set true only for LLM/agent tasks; set false for scripts, tests, servers, sleeps, and ordinary shell commands.',
         );
       }
-      if (
-        Object.prototype.hasOwnProperty.call(input, 'surviveReload') &&
-        typeof input.surviveReload !== 'boolean'
-      ) {
+      if (Object.hasOwn(input, 'surviveReload') && typeof input.surviveReload !== 'boolean') {
         throw new ReloadSurvivalError(
           'pi_bg_survive_reload_invalid',
           'bg_run surviveReload must be boolean when present',
@@ -942,7 +934,6 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
       );
     },
   });
-
 
   pi.registerTool<typeof BgStatusParams, BgStatusDetails>({
     name: 'bg_status',

@@ -1,60 +1,56 @@
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { createWriteStream, existsSync } from 'node:fs';
-import { mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Api, Model } from '@earendil-works/pi-ai';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { formatSize } from '@earendil-works/pi-coding-agent';
 import {
+  type BgLogsDetails,
+  type BgTask,
+  type BgTaskSnapshot,
   boundedRead,
   deriveTaskNameFromCommand,
   escapeXml,
   formatAgentActivityLine,
   formatDuration,
   isJsonObject,
+  type JsonObject,
+  type KillKind,
   normalizeTaskName,
   parseAgentActivity,
   parseJsonText,
-  resolveShellPolicy,
-  sanitizePathSegment,
-  shellInvocationForPolicy,
-  shellPolicySnapshot,
-  shellQuote,
-  snapshot,
-  taskDisplayName,
-  type BgLogsDetails,
-  type BgTask,
-  type BgTaskSnapshot,
-  type JsonObject,
-  type KillKind,
+  type ReloadableShellExecutionV1,
   type ReloadShellActivationClaimV1,
   type ReloadShellActivationLeaseV1,
   type ReloadShellHostAdapterV1,
   type ReloadShellIdentityV1,
   type ReloadShellOwnerHubV1,
-  type ReloadableShellExecutionV1,
+  ReloadSurvivalError,
   type ResolvedShellPolicy,
+  resolveShellPolicy,
   type StartTaskOptions,
+  sanitizePathSegment,
+  shellInvocationForPolicy,
+  shellPolicySnapshot,
+  shellQuote,
+  snapshot,
   type TaskContextUsage,
   type TaskStatus,
   type TaskTokenUsage,
   type TaskToolUsage,
   type TerminalPublicationAbandonReason,
-  ReloadSurvivalError,
+  taskDisplayName,
 } from './common.js';
-import { closeAndFsyncOutputStream, writeFileFsynced, writeJsonAtomic } from './task-durable.js';
-
-import {
-  resolvePiLaunch,
-  type PiLaunchSpec,
-} from './pi-launch.js';
 import { defaultTasksDir } from './config.js';
 import { BackgroundTaskExtensionServiceClosedError } from './extension-api.js';
+import { type PiLaunchSpec, resolvePiLaunch } from './pi-launch.js';
 import {
   createReloadableShellExecutionV1,
   RELOAD_SHELL_OWNER_PROTOCOL,
 } from './reload-shell-owner.js';
+import { closeAndFsyncOutputStream, writeJsonAtomic } from './task-durable.js';
 import {
   runWindowsTaskkill,
   type TaskkillOutcome,
@@ -62,7 +58,7 @@ import {
   type WindowsTaskkillOptions,
 } from './windows-taskkill.js';
 
-export const MAX_OUTPUT_BYTES = Number(process.env['PI_BG_MAX_OUTPUT_BYTES'] ?? 20 * 1024 * 1024);
+export const MAX_OUTPUT_BYTES = Number(process.env.PI_BG_MAX_OUTPUT_BYTES ?? 20 * 1024 * 1024);
 export const KILL_GRACE_MS = 3000;
 export const STOP_WAIT_MS = KILL_GRACE_MS + 1500;
 export const MAX_RECENT_TASKS = 100;
@@ -244,12 +240,11 @@ function defaultTaskId(): string {
   return `b${randomBytes(4).toString('hex')}`;
 }
 
-
 export function commandMayLaunchPiAgent(
   command: string,
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-  if (env['PI_BG_DISABLE_PI_TELEMETRY'] === '1') return false;
+  if (env.PI_BG_DISABLE_PI_TELEMETRY === '1') return false;
   return /(^|[\s;&|()])pi(?=\s)(?=[^\n;&|]*(?:\s-p(?:\s|$)|\s--print(?:\s|$)|\s--mode(?:=|\s+)json\b))/m.test(
     command,
   );
@@ -371,17 +366,17 @@ function currentToolUsage() {
 }
 
 function renderWindowsArgument(value) {
-  if (value.length > 0 && !/[ \\t\"]/.test(value)) return value;
-  let rendered = "\\\"";
+  if (value.length > 0 && !/[ \\t"]/.test(value)) return value;
+  let rendered = "\\"";
   let backslashes = 0;
   for (const char of value) {
     if (char === "\\\\") {
       backslashes += 1;
       continue;
     }
-    if (char === "\\\"") {
+    if (char === "\\"") {
       rendered += "\\\\".repeat(backslashes * 2 + 1);
-      rendered += "\\\"";
+      rendered += "\\"";
       backslashes = 0;
       continue;
     }
@@ -392,7 +387,7 @@ function renderWindowsArgument(value) {
     rendered += char;
   }
   if (backslashes > 0) rendered += "\\\\".repeat(backslashes * 2);
-  rendered += "\\\"";
+  rendered += "\\"";
   return rendered;
 }
 
@@ -742,10 +737,7 @@ interface TelemetryDelta {
   model?: string | undefined;
 }
 
-function noopOnChange(): void {
-  return undefined;
-}
-
+function noopOnChange(): void {}
 
 export class BackgroundTaskRegistry {
   private readonly tasks = new Map<string, BgTask>();
@@ -842,7 +834,6 @@ export class BackgroundTaskRegistry {
     this.shellPolicy = resolved;
     return resolved;
   }
-
 
   private static positiveTimeout(
     value: number | undefined,
@@ -1243,7 +1234,6 @@ export class BackgroundTaskRegistry {
     }
   }
 
-
   private captureSpawnedChild(task: BgTask, child: BackgroundTaskChildProcess): void {
     task.child = child;
     task.pid = child.pid;
@@ -1289,7 +1279,7 @@ export class BackgroundTaskRegistry {
     command: string,
     options: StartTaskOptions = {},
   ): Promise<BgTask> {
-    const hasSurvival = Object.prototype.hasOwnProperty.call(options, 'surviveReload');
+    const hasSurvival = Object.hasOwn(options, 'surviveReload');
     if (hasSurvival && typeof options.surviveReload !== 'boolean') {
       throw new ReloadSurvivalError(
         'pi_bg_survive_reload_invalid',
@@ -1757,8 +1747,6 @@ export class BackgroundTaskRegistry {
     }
   }
 
-
-
   resolveTask(idOrPrefix: string): BgTask {
     const id = idOrPrefix.trim();
     if (!id) throw new Error('Task ID is required');
@@ -1798,9 +1786,10 @@ export class BackgroundTaskRegistry {
     task.killKind = kind;
     if (reason) task.error = reason;
     this.requestKill(task, 'SIGTERM');
-    const stopped = this.platform === 'win32'
-      ? await this.waitForEndOrWindowsForceFailure(task, stopWaitMs)
-      : await this.waitForEndOrPosixForceFailure(task, stopWaitMs);
+    const stopped =
+      this.platform === 'win32'
+        ? await this.waitForEndOrWindowsForceFailure(task, stopWaitMs)
+        : await this.waitForEndOrPosixForceFailure(task, stopWaitMs);
     const posixForceFailure = this.posixProcessGroupKillStates.get(task)?.failure;
     if (posixForceFailure !== undefined) throw posixForceFailure;
     const windowsForceFailure = this.windowsKillStates.get(task)?.forceFailure;

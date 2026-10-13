@@ -120,10 +120,7 @@ export class LazyModule<T> {
 
   /** Assert immediately before an activation-owned side effect. */
   assertOpen(expectedGeneration = this.activationGeneration): void {
-    if (
-      this.currentState === 'closed' ||
-      expectedGeneration !== this.activationGeneration
-    ) {
+    if (this.currentState === 'closed' || expectedGeneration !== this.activationGeneration) {
       throw this.closedError();
     }
   }

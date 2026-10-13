@@ -41,7 +41,6 @@ export class ReloadSurvivalError extends Error {
   }
 }
 
-
 export type JsonObject = Readonly<Record<PropertyKey, unknown>>;
 
 export interface TaskContextUsage {
@@ -111,14 +110,20 @@ export interface ReloadShellActivationClaimV1 {
 
 export interface ReloadShellProcessV1 {
   readonly pid?: number | undefined;
-  stdout?: {
-    on(event: 'data', listener: (data: Buffer | string) => void): unknown;
-    off?(event: 'data', listener: (data: Buffer | string) => void): unknown;
-  } | null | undefined;
-  stderr?: {
-    on(event: 'data', listener: (data: Buffer | string) => void): unknown;
-    off?(event: 'data', listener: (data: Buffer | string) => void): unknown;
-  } | null | undefined;
+  stdout?:
+    | {
+        on(event: 'data', listener: (data: Buffer | string) => void): unknown;
+        off?(event: 'data', listener: (data: Buffer | string) => void): unknown;
+      }
+    | null
+    | undefined;
+  stderr?:
+    | {
+        on(event: 'data', listener: (data: Buffer | string) => void): unknown;
+        off?(event: 'data', listener: (data: Buffer | string) => void): unknown;
+      }
+    | null
+    | undefined;
   kill(signal?: NodeJS.Signals): boolean;
   on(event: 'error', listener: (error: Error) => void): unknown;
   on(
@@ -152,11 +157,13 @@ export interface ReloadableShellExecutionV1 {
   readonly terminal: Promise<BgTask>;
   readonly requestStop: (kind: ReloadShellStopKind, reason?: string) => Promise<BgTask>;
   phase: 'starting' | 'running' | 'stop_requested' | 'finalizing' | 'terminal' | 'released';
-  closeObservation?: {
-    code: number | null;
-    signal: NodeJS.Signals | null;
-    observedAt: number;
-  } | undefined;
+  closeObservation?:
+    | {
+        code: number | null;
+        signal: NodeJS.Signals | null;
+        observedAt: number;
+      }
+    | undefined;
   admissionCommitted: boolean;
   notificationState: ReloadShellNotificationState;
   readonly commitInitialMetadata: (signal?: AbortSignal) => Promise<void>;
@@ -190,9 +197,7 @@ export interface ReloadShellOwnerHubV1 {
     adapter: ReloadShellHostAdapterV1,
   ): ReloadShellActivationLeaseV1;
   abortActivation(claim: ReloadShellActivationClaimV1, error: unknown): void;
-  beginReloadHandoff(
-    lease: ReloadShellActivationLeaseV1,
-  ): readonly ReloadableShellExecutionV1[];
+  beginReloadHandoff(lease: ReloadShellActivationLeaseV1): readonly ReloadableShellExecutionV1[];
   releaseActivation(lease: ReloadShellActivationLeaseV1): void;
   registerExecution(
     lease: ReloadShellActivationLeaseV1,
@@ -239,9 +244,6 @@ export interface BgTaskSnapshot {
   /** Immutable non-secret shell selection for ordinary shell tasks. */
   shellPolicy?: ShellPolicySnapshot | undefined;
 }
-
-
-
 
 export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   name: string;
@@ -381,9 +383,6 @@ export interface StartTaskOptions {
   /** @internal EventBus protocol barrier; callers should not set this outside the extension service. */
   terminalPublicationGate?: Promise<void> | undefined;
 }
-
-
-
 
 export const DEFAULT_LOG_BYTES = Math.min(DEFAULT_MAX_BYTES, 50 * 1024);
 export const MAX_LOG_BYTES = Math.min(DEFAULT_MAX_BYTES, 50 * 1024);
@@ -850,7 +849,7 @@ function inspectWindowsShellCandidate(path: string): ShellCandidateResult {
 }
 
 function windowsPathValue(env: NodeJS.ProcessEnv): string {
-  return env['PATH'] ?? env['Path'] ?? env['path'] ?? '';
+  return env.PATH ?? env.Path ?? env.path ?? '';
 }
 
 function resolveWindowsBash(env: NodeJS.ProcessEnv): string {
@@ -904,7 +903,7 @@ function resolvePosixExecutable(
 ): string {
   const binCandidate = `/bin/${name}`;
   if (inspectPosixShellCandidate(binCandidate)) return binCandidate;
-  const pathValue = env['PATH'] ?? '';
+  const pathValue = env.PATH ?? '';
   for (const entry of pathValue.split(delimiter)) {
     if (entry.length === 0) continue;
     const directory = isAbsolute(entry) ? entry : resolve(activationCwd, entry);
@@ -929,12 +928,11 @@ export function resolveShellPolicy(
   activationCwd: string = process.cwd(),
 ): ResolvedShellPolicy {
   if (platform === 'win32') {
-    const requestedShell = env['PI_BG_SHELL'];
-    const requestedPath = env['PI_BG_SHELL_PATH'];
+    const requestedShell = env.PI_BG_SHELL;
+    const requestedPath = env.PI_BG_SHELL_PATH;
     if (requestedShell === undefined) {
-      if (requestedPath !== undefined)
-        failShellInvocation('PI_BG_SHELL_PATH requires PI_BG_SHELL');
-      const comSpec = env['ComSpec'];
+      if (requestedPath !== undefined) failShellInvocation('PI_BG_SHELL_PATH requires PI_BG_SHELL');
+      const comSpec = env.ComSpec;
       return freezeShellPolicy({
         policy: 'cmd',
         executable: comSpec && comSpec.length > 0 ? comSpec : 'cmd.exe',
@@ -952,7 +950,7 @@ export function resolveShellPolicy(
         ? validateWindowsShellPath(requestedPath, 'PI_BG_SHELL_PATH')
         : undefined;
     if (requestedShell === 'cmd') {
-      const comSpec = env['ComSpec'];
+      const comSpec = env.ComSpec;
       return freezeShellPolicy({
         policy: 'cmd',
         executable: explicitPath ?? (comSpec && comSpec.length > 0 ? comSpec : 'cmd.exe'),
@@ -972,7 +970,7 @@ export function resolveShellPolicy(
     });
   }
 
-  const configuredPolicy = env['PI_BG_POSIX_SHELL'];
+  const configuredPolicy = env.PI_BG_POSIX_SHELL;
   if (
     configuredPolicy !== undefined &&
     configuredPolicy !== 'inherit' &&
@@ -982,14 +980,14 @@ export function resolveShellPolicy(
     failShellInvocation('PI_BG_POSIX_SHELL must be exactly inherit, bash, or sh');
   }
   const policy = configuredPolicy ?? 'inherit';
-  const configuredPath = env['PI_BG_POSIX_SHELL_PATH'];
+  const configuredPath = env.PI_BG_POSIX_SHELL_PATH;
   if (policy === 'inherit') {
     if (configuredPath !== undefined) {
       failShellInvocation(
         'PI_BG_POSIX_SHELL_PATH requires PI_BG_POSIX_SHELL=bash or PI_BG_POSIX_SHELL=sh',
       );
     }
-    const inherited = env['SHELL'];
+    const inherited = env.SHELL;
     const executable = inherited && inherited.length > 0 ? inherited : '/bin/sh';
     const dialect = inheritedPosixDialect(executable);
     return freezeShellPolicy({

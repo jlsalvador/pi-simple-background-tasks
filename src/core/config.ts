@@ -50,16 +50,19 @@ function readConfigFile(file: string): BackgroundTasksConfigFile | undefined {
   try {
     parsed = JSON.parse(text);
   } catch (error) {
-    configError(file, `is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+    configError(
+      file,
+      `is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
   if (!isRecord(parsed)) configError(file, 'must contain a JSON object');
   const unknown = Object.keys(parsed).filter((key) => key !== 'tasksDir' && key !== 'dockShortcut');
   if (unknown.length > 0) configError(file, `contains unknown keys: ${unknown.join(', ')}`);
-  if (parsed['tasksDir'] !== undefined && typeof parsed['tasksDir'] !== 'string')
+  if (parsed.tasksDir !== undefined && typeof parsed.tasksDir !== 'string')
     configError(file, 'has a non-string tasksDir');
   if (
-    parsed['dockShortcut'] !== undefined &&
-    !(PI_BG_DOCK_SHORTCUT_VALUES as readonly string[]).includes(parsed['dockShortcut'] as string)
+    parsed.dockShortcut !== undefined &&
+    !(PI_BG_DOCK_SHORTCUT_VALUES as readonly string[]).includes(parsed.dockShortcut as string)
   )
     configError(
       file,

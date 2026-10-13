@@ -2,20 +2,20 @@ import { existsSync } from 'node:fs';
 import type { Theme } from '@earendil-works/pi-coding-agent';
 import { formatSize } from '@earendil-works/pi-coding-agent';
 import {
+  type Component,
   matchesKey,
+  type TUI,
   truncateToWidth,
   visibleWidth,
-  type Component,
-  type TUI,
 } from '@earendil-works/pi-tui';
 import {
+  type BgTaskSnapshot,
   boundedRead,
   compactWhitespace,
   formatCompactNumber,
   formatDuration,
   taskDisplayName,
   truncateChars,
-  type BgTaskSnapshot,
 } from '../core/common.js';
 
 export interface TaskManagerTheme {

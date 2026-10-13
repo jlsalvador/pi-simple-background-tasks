@@ -34,11 +34,7 @@ export interface DurableDirectoryHandle {
 
 export interface DurableFileOperations {
   platform: NodeJS.Platform;
-  openWritable(
-    path: string,
-    flag: DurableWriteFlag,
-    mode?: number,
-  ): Promise<DurableWritableHandle>;
+  openWritable(path: string, flag: DurableWriteFlag, mode?: number): Promise<DurableWritableHandle>;
   openDirectory(path: string): Promise<DurableDirectoryHandle>;
   rename(source: string, target: string): Promise<void>;
   remove(path: string): Promise<void>;
@@ -100,7 +96,9 @@ export class DurableFileCancellationError extends Error {
     const commitText = input.renameCompleted
       ? ` Replacement may already be visible at ${input.targetPath ?? input.path}.`
       : '';
-    super(`Durable file operation cancelled for ${input.path}: ${reasonText}.${commitText}${cleanupText}`);
+    super(
+      `Durable file operation cancelled for ${input.path}: ${reasonText}.${commitText}${cleanupText}`,
+    );
     this.name = 'DurableFileCancellationError';
     this.path = input.path;
     this.reason = input.reason;
@@ -343,7 +341,13 @@ async function syncDirectoryAfterRename(
   try {
     handle = await operations.openDirectory(directoryPath);
   } catch (error) {
-    throwDurable(failure('open_directory', directoryPath, error), [], targetPath, temporaryPath, true);
+    throwDurable(
+      failure('open_directory', directoryPath, error),
+      [],
+      targetPath,
+      temporaryPath,
+      true,
+    );
   }
   const result = await syncCloseDirectory(handle, directoryPath);
   if (result.primaryFailure !== undefined) {
@@ -372,7 +376,13 @@ async function replaceWithOperations(
   const writeResult = await writeSyncClose(handle, temporaryPath, data, signal);
   if (writeResult.primaryFailure !== undefined) {
     await removeTemporary(operations, temporaryPath, writeResult.cleanupFailures);
-    throwDurable(writeResult.primaryFailure, writeResult.cleanupFailures, path, temporaryPath, false);
+    throwDurable(
+      writeResult.primaryFailure,
+      writeResult.cleanupFailures,
+      path,
+      temporaryPath,
+      false,
+    );
   }
   if (writeResult.cancelled && signal !== undefined) {
     await removeTemporary(operations, temporaryPath, writeResult.cleanupFailures);
@@ -385,12 +395,7 @@ async function replaceWithOperations(
       false,
     );
   }
-  const renameResult = await renameWithWindowsContention(
-    operations,
-    temporaryPath,
-    path,
-    signal,
-  );
+  const renameResult = await renameWithWindowsContention(operations, temporaryPath, path, signal);
   if (renameResult.cancelled && signal !== undefined) {
     const cleanupFailures: DurableFailure[] = [];
     await removeTemporary(operations, temporaryPath, cleanupFailures);
@@ -421,11 +426,7 @@ async function replaceWithOperations(
  * open, including transient scanners, indexers, and concurrent writers. The
  * operation is legitimate and simply needs to be reattempted.
  */
-const WINDOWS_RENAME_CONTENTION_CODES: ReadonlySet<string> = new Set([
-  'EPERM',
-  'EACCES',
-  'EBUSY',
-]);
+const WINDOWS_RENAME_CONTENTION_CODES: ReadonlySet<string> = new Set(['EPERM', 'EACCES', 'EBUSY']);
 
 const WINDOWS_RENAME_ATTEMPTS = 10;
 const WINDOWS_RENAME_RETRY_DELAY_MS = 20;
@@ -514,11 +515,7 @@ const defaultWriter = createDurableFileWriter(nodeOperations);
 
 export function createDurableFileWriter(operations: DurableFileOperations): DurableFileWriter {
   return {
-    async write(
-      path: string,
-      data: DurableData,
-      options: DurableWriteOptions = {},
-    ): Promise<void> {
+    async write(path: string, data: DurableData, options: DurableWriteOptions = {}): Promise<void> {
       await writeWithOperations(operations, path, data, options);
     },
     async replace(
