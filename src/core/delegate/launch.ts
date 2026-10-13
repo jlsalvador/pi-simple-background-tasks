@@ -223,7 +223,6 @@ export const DELEGATE_FORBIDDEN_TOOLS: readonly string[] = [
   'bg_kill',
   'bg_status',
   'bg_logs',
-  'bg_run_pi_attested',
 ];
 
 export function delegateToolsFor(capability: DelegateCapability): readonly string[] {

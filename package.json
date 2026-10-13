@@ -1,7 +1,7 @@
 {
   "name": "pi-background-tasks",
   "version": "2.6.9",
-  "description": "Pi extension for durable background shell tasks, read-only delegated agents, local attested Pi runs, and fixed-purpose Fusion workflows through child Pi processes.",
+  "description": "Pi extension for durable background shell tasks and read-only delegated agents through child Pi processes.",
   "type": "module",
   "license": "ISC",
   "author": "Ismail <ismailsalikhodjaev@gmail.com>",
@@ -83,7 +83,6 @@
   "pi": {
     "image": "https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png",
     "extensions": [
-      "./dist/extensions/anthropic-attribution.js",
       "./dist/extensions/background-tasks.js"
     ]
   },

@@ -246,20 +246,9 @@ export interface BgTaskSnapshot {
   telemetryUnavailableReason?: string | undefined;
   /** Immutable non-secret shell selection for ordinary shell tasks. */
   shellPolicy?: ShellPolicySnapshot | undefined;
-  attestationPath?: string | undefined;
   delegate?: DelegateTaskFacts | undefined;
 }
 
-export interface AttestedPiTaskFiles {
-  eventsPath: string;
-  stderrPath: string;
-  wrapperPath: string;
-  attestationPath: string;
-}
-
-export interface AttestedPiTaskSnapshot extends BgTaskSnapshot {
-  attestedPi?: AttestedPiTaskFiles | undefined;
-}
 
 /** Delegate-specific task facts surfaced through snapshots and `bg_result`. */
 export interface DelegateTaskFacts {
@@ -294,7 +283,6 @@ export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   eventsAbsPath?: string | undefined;
   stderrAbsPath?: string | undefined;
   wrapperAbsPath?: string | undefined;
-  attestationAbsPath?: string | undefined;
   child?: BackgroundTaskChildProcess | undefined;
   /** Immutable in-memory ownership captured from a detached POSIX spawn; never restored from metadata. */
   ownedPosixProcessGroupId?: number | undefined;
@@ -324,8 +312,6 @@ export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   /** Partial trailing stdout line held between chunks while reconstructing wrapped-agent control lines. */
   agentStdoutBuffer?: string | undefined;
   telemetryUnavailableReason?: string | undefined;
-  attestationPath?: string | undefined;
-  attestedPi?: AttestedPiTaskFiles | undefined;
   delegate?: DelegateTaskFacts | undefined;
   /** In-memory same-process authority for an opted ordinary shell task; never serialized. */
   reloadExecution?: ReloadableShellExecutionV1 | undefined;
@@ -443,16 +429,6 @@ export interface StartDelegateTaskOptions {
   timeoutSeconds?: number | undefined;
 }
 
-export interface StartAttestedPiTaskOptions {
-  name: string;
-  provider: string;
-  model: string;
-  prompt: string;
-  reportPath: string;
-  extraPiArgs?: string[] | undefined;
-  thinking?: string | undefined;
-  timeoutSeconds?: number | undefined;
-}
 
 export const DEFAULT_LOG_BYTES = Math.min(DEFAULT_MAX_BYTES, 50 * 1024);
 export const MAX_LOG_BYTES = Math.min(DEFAULT_MAX_BYTES, 50 * 1024);
@@ -1143,7 +1119,6 @@ export function snapshot(task: BgTask): BgTaskSnapshot {
     model: task.model,
     telemetryUnavailableReason: task.telemetryUnavailableReason,
     shellPolicy: task.shellPolicy,
-    attestationPath: task.attestationPath,
     delegate: task.delegate,
   };
 }

@@ -7,7 +7,7 @@ function signalError(signal: AbortSignal): Error {
   return reason instanceof Error
     ? reason
     : new Error(
-        `Attested Git preflight cancelled${reason === undefined ? '' : `: ${String(reason)}`}`,
+        `Task admission cancelled${reason === undefined ? '' : `: ${String(reason)}`}`,
       );
 }
 
