@@ -681,7 +681,7 @@ export default function delegateChildExtension(pi: ExtensionAPI): void {
 
   pi.on('context', (event, ctx) => {
     // Measurement failures remain fail-closed. A successful estimate is
-    // advisory: Fusion BUG-185 proved that subtracting hypothetical output from
+    // advisory: subtracting hypothetical output from
     // a live provider payload can falsely refuse valid work. Package-owned
     // growth is bounded earlier by the tool-result spill governor instead.
     try {

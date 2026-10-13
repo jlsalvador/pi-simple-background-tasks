@@ -16,11 +16,6 @@ import type {
   StartDelegateTaskOptions,
 } from './core/common.js';
 import { truncateChars } from './core/common.js';
-import type {
-  FusionFailureResultView,
-  FusionUsage,
-  FusionWorkflowId,
-} from './core/fusion/types.js';
 import {
   DELEGATE_AUTO_DELIVER_MODES,
   DELEGATE_CAPABILITIES,
@@ -134,7 +129,7 @@ export const DelegateParams = Type.Object(
 const ResultParams = Type.Object(
   {
     taskId: Type.String({
-      description: 'Background delegate or Fusion task id returned by its launch tool.',
+      description: 'Background delegate task id returned by bg_delegate.',
     }),
     delivery: Type.Optional(
       Type.String({
@@ -178,29 +173,7 @@ export interface DelegateLaunchDetails {
   trigger_on_completion: boolean;
 }
 
-export interface FusionBackgroundResultDetails {
-  schema_version: 'pi-background-tasks.fusion-result-view.v1';
-  task_id: string;
-  state: 'running' | 'committed' | 'failed' | 'cancelled';
-  delivery: DelegateDeliveryMode | 'none';
-  workflow: FusionWorkflowId;
-  artifact_dir: string;
-  answer_bytes?: number | undefined;
-  answer_sha256?: string | undefined;
-  usage_delivered?: boolean | undefined;
-  answer?: { present: false; reason: 'run_did_not_commit' } | undefined;
-  summary_status?: FusionFailureResultView['summary_status'] | undefined;
-  failure_summary_ref?: FusionFailureResultView['failure_summary_ref'] | undefined;
-  failure?: FusionFailureResultView['failure'] | undefined;
-  progress?: FusionFailureResultView['progress'] | undefined;
-  usage_so_far?: FusionFailureResultView['usage_so_far'] | undefined;
-  attempts?: FusionFailureResultView['attempts'] | undefined;
-  evidence_artifacts?: FusionFailureResultView['evidence_artifacts'] | undefined;
-  remediation_ids?: FusionFailureResultView['remediation_ids'] | undefined;
-  summary_unavailable_reason?: FusionFailureResultView['summary_unavailable_reason'] | undefined;
-}
-
-export type BackgroundResultDetails = DelegateResultDetails | FusionBackgroundResultDetails;
+export type BackgroundResultDetails = DelegateResultDetails;
 
 export interface DelegateResultDetails {
   schema_version: 'pi-background-tasks.delegate-result-view.v1';
@@ -227,24 +200,6 @@ function sha256Buffer(buffer: Buffer): string {
   return `sha256:${createHash('sha256').update(buffer).digest('hex')}`;
 }
 
-function cloneFusionUsage(usage: FusionUsage): FusionUsage {
-  return {
-    input: usage.input,
-    output: usage.output,
-    cacheRead: usage.cacheRead,
-    cacheWrite: usage.cacheWrite,
-    ...(usage.cacheWrite1h === undefined ? {} : { cacheWrite1h: usage.cacheWrite1h }),
-    ...(usage.reasoning === undefined ? {} : { reasoning: usage.reasoning }),
-    totalTokens: usage.totalTokens,
-    cost: {
-      input: usage.cost.input,
-      output: usage.cost.output,
-      cacheRead: usage.cost.cacheRead,
-      cacheWrite: usage.cost.cacheWrite,
-      total: usage.cost.total,
-    },
-  };
-}
 
 function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -360,10 +315,6 @@ interface DelegateResultRuntime {
   inlineTooLarge: typeof import('./core/delegate/runner.js').inlineTooLarge;
 }
 
-interface FusionResultRuntime {
-  readFusionCommittedResult: typeof import('./core/fusion/result-package.js').readFusionCommittedResult;
-  readFusionFailureResult: typeof import('./core/fusion/result-package.js').readFusionFailureResult;
-}
 
 async function importDelegateExtensionRuntime(): Promise<DelegateExtensionRuntime> {
   const [launch, runner] = await Promise.all([
@@ -386,13 +337,6 @@ async function importDelegateResultRuntime(): Promise<DelegateResultRuntime> {
   };
 }
 
-async function importFusionResultRuntime(): Promise<FusionResultRuntime> {
-  const resultPackage = await import('./core/fusion/result-package.js');
-  return {
-    readFusionCommittedResult: resultPackage.readFusionCommittedResult,
-    readFusionFailureResult: resultPackage.readFusionFailureResult,
-  };
-}
 
 export interface DelegateExtensionDependencies {
   startDelegateTask: (ctx: ExtensionContext, options: StartDelegateTaskOptions) => Promise<BgTask>;
@@ -409,12 +353,10 @@ export interface DelegateExtensionDependencies {
 
 export interface BackgroundResultExtensionDependencies {
   resolveTask: (idOrPrefix: string) => BgTask;
-  claimFusionUsage: (task: BgTask) => Promise<boolean>;
   /** Activation-local fence installed synchronously before asynchronous cleanup. */
   activationCloseFence: SynchronousActivationCloseFence;
   /** Internal deterministic deferred-import seams. */
   loadDelegateResultRuntime?: (() => Promise<DelegateResultRuntime>) | undefined;
-  loadFusionResultRuntime?: (() => Promise<FusionResultRuntime>) | undefined;
 }
 
 async function defaultHookEvidence(
@@ -736,10 +678,6 @@ export function registerBackgroundResultExtension(
     'delegate-result-verifier',
     deps.loadDelegateResultRuntime ?? importDelegateResultRuntime,
   );
-  const fusionResultRuntime = new LazyModule(
-    'fusion-result-verifier',
-    deps.loadFusionResultRuntime ?? importFusionResultRuntime,
-  );
   let resultClosedError: Error | undefined;
   const assertResultActive = (): void => {
     if (resultClosedError !== undefined) throw resultClosedError;
@@ -750,7 +688,6 @@ export function registerBackgroundResultExtension(
       'lazy_module_closed: background-result facade belongs to a closed activation (Pi session shutdown)',
     );
     delegateResultRuntime.close('Pi session shutdown');
-    fusionResultRuntime.close('Pi session shutdown');
   };
   deps.activationCloseFence.add(closeResultActivation);
 
@@ -758,10 +695,10 @@ export function registerBackgroundResultExtension(
     name: DELEGATE_RESULT_TOOL_NAME,
     label: 'Background Result',
     description:
-      'Retrieve a hash-verified result from a bg_delegate or background Fusion task. Never blocks: a running task returns a typed not-ready result. Oversized answers are never truncated.',
-    promptSnippet: 'Retrieve the verified answer from a completed delegate or Fusion task',
+      'Retrieve a hash-verified result from a bg_delegate task. Never blocks: a running task returns a typed not-ready result. Oversized answers are never truncated.',
+    promptSnippet: 'Retrieve the verified answer from a completed delegate task',
     promptGuidelines: [
-      'Call bg_result once the delegate or Fusion terminal notification has arrived. It never blocks and must not be polled.',
+      'Call bg_result once the delegate terminal notification has arrived. It never blocks and must not be polled.',
       'A not-ready result means the task is still running; end the turn and wait for the notification.',
     ],
     parameters: ResultParams,
@@ -794,137 +731,11 @@ export function registerBackgroundResultExtension(
           { code: 'task_unknown', childCreated: false },
         );
       }
-      const fusion = task.fusion;
-      if (fusion !== undefined) {
-        const requestedDelivery = requireDelivery(params.delivery);
-        if (task.status === 'running') {
-          const details: FusionBackgroundResultDetails = {
-            schema_version: 'pi-background-tasks.fusion-result-view.v1',
-            task_id: task.id,
-            state: 'running',
-            delivery: 'none',
-            workflow: fusion.workflow,
-            artifact_dir: fusion.artifactDir,
-          };
-          return {
-            content: textContent(
-              `Fusion ${task.id} is still running. bg_result never blocks. End this turn; the terminal notification will wake you, then call bg_result again.`,
-            ),
-            details,
-          };
-        }
-        if (task.status !== 'completed' || fusion.outcome?.status !== 'committed') {
-          const terminal = await fusionResultRuntime.run((loaded) =>
-            loaded.readFusionFailureResult({
-              artifactDirAbs: fusion.artifactDirAbs,
-              artifactDir: fusion.artifactDir,
-              runId: fusion.runId,
-              workflow: fusion.workflow,
-            }),
-          );
-          fusionResultRuntime.assertOpen();
-          const state =
-            fusion.outcome?.status === 'cancelled' || task.status === 'killed'
-              ? 'cancelled'
-              : 'failed';
-          const details: FusionBackgroundResultDetails = {
-            schema_version: 'pi-background-tasks.fusion-result-view.v1',
-            task_id: task.id,
-            state,
-            delivery: 'none',
-            workflow: fusion.workflow,
-            artifact_dir: fusion.artifactDir,
-            answer: terminal.answer,
-            summary_status: terminal.summary_status,
-            ...(terminal.failure_summary_ref === undefined
-              ? {}
-              : { failure_summary_ref: terminal.failure_summary_ref }),
-            ...(terminal.failure === undefined ? {} : { failure: terminal.failure }),
-            ...(terminal.progress === undefined ? {} : { progress: terminal.progress }),
-            ...(terminal.usage_so_far === undefined ? {} : { usage_so_far: terminal.usage_so_far }),
-            ...(terminal.attempts === undefined ? {} : { attempts: terminal.attempts }),
-            ...(terminal.evidence_artifacts === undefined
-              ? {}
-              : { evidence_artifacts: terminal.evidence_artifacts }),
-            ...(terminal.remediation_ids === undefined
-              ? {}
-              : { remediation_ids: terminal.remediation_ids }),
-            ...(terminal.summary_unavailable_reason === undefined
-              ? {}
-              : { summary_unavailable_reason: terminal.summary_unavailable_reason }),
-          };
-          return {
-            content: textContent(
-              `Fusion ${task.id} ${state}; no answer was committed. Terminal evidence status: ${terminal.summary_status}. Delivery is none; use only the manifest-bound artifact references in details.`,
-            ),
-            details,
-          };
-        }
-        const verified = await fusionResultRuntime.run((loaded) =>
-          loaded.readFusionCommittedResult({
-            artifactDirAbs: fusion.artifactDirAbs,
-            artifactDir: fusion.artifactDir,
-            runId: fusion.runId,
-            workflow: fusion.workflow,
-          }),
-        );
-        fusionResultRuntime.assertOpen();
-        const answerBytes = Buffer.byteLength(verified.mergedText, 'utf8');
-        const answerSha256 = sha256Buffer(Buffer.from(verified.mergedText, 'utf8'));
-        const useArtifact =
-          requestedDelivery === 'artifact' ||
-          (requestedDelivery === undefined && answerBytes > DELEGATE_INLINE_ANSWER_BYTES);
-        if (requestedDelivery === 'inline' && answerBytes > DELEGATE_INLINE_ANSWER_BYTES) {
-          throw new Error(
-            `Fusion result ${task.id} is ${String(answerBytes)} bytes, above the ${String(DELEGATE_INLINE_ANSWER_BYTES)}-byte inline limit. Use delivery:"artifact"; nothing was truncated.`,
-          );
-        }
-        fusionResultRuntime.assertOpen();
-        // The durable claim is the settlement point. Once started, this verified
-        // retrieval must return its usage even if shutdown closes the facade
-        // while registry metadata is being written. Everything after the await
-        // is activation-local result construction with no host side effects.
-        const usage = cloneFusionUsage(verified.details.usage);
-        const usageDelivered = await deps.claimFusionUsage(task);
-        const details: FusionBackgroundResultDetails = {
-          schema_version: 'pi-background-tasks.fusion-result-view.v1',
-          task_id: task.id,
-          state: 'committed',
-          delivery: useArtifact ? 'artifact' : 'inline',
-          workflow: fusion.workflow,
-          artifact_dir: fusion.artifactDir,
-          answer_bytes: answerBytes,
-          answer_sha256: answerSha256,
-          usage_delivered: usageDelivered,
-        };
-        const header = [
-          `Fusion ${task.id} completed (${fusion.workflow}).`,
-          `Answer: ${String(answerBytes)} bytes, ${answerSha256} (verified).`,
-          `Artifacts: ${fusion.artifactDir}`,
-          usageDelivered
-            ? 'Usage: attached to this retrieval exactly once.'
-            : 'Usage: already attached by an earlier retrieval; not counted again.',
-        ].join('\n');
-        const result = useArtifact
-          ? {
-              content: textContent(
-                `${header}\nDelivery: artifact. The complete answer is ${fusion.artifactDir}/merged.md; it was not truncated.`,
-              ),
-              details,
-            }
-          : { content: textContent(`${header}\n\n${verified.mergedText}`), details };
-        if (!usageDelivered) return result;
-        const resultWithUsage: typeof result & { usage: FusionUsage } = {
-          ...result,
-          usage,
-        };
-        return resultWithUsage;
-      }
 
       const facts = task.delegate;
       if (facts === undefined) {
         throw new DelegateError(
-          `bg_result task ${task.id} has no retrievable delegate or Fusion result; use bg_logs for ordinary background tasks`,
+          `bg_result task ${task.id} has no retrievable delegate result; use bg_logs for ordinary background tasks`,
           { code: 'task_unknown', childCreated: false },
         );
       }
@@ -1034,22 +845,14 @@ export function registerBackgroundResultExtension(
     renderResult(result, options: ToolRenderResultOptions, theme: Theme) {
       void options;
       const details = result.details;
-      const fusion = details.schema_version === 'pi-background-tasks.fusion-result-view.v1';
       if (details.state === 'running')
         return new Text(
-          theme.fg('warning', `${fusion ? 'fusion' : 'delegate'} ${details.task_id} still running`),
+          theme.fg('warning', `delegate ${details.task_id} still running`),
           0,
           0,
         );
-      if (fusion && (details.state === 'failed' || details.state === 'cancelled')) {
-        return new Text(
-          theme.fg('warning', `${details.state} fusion; no committed answer · ${details.summary_status ?? 'unavailable'}`),
-          0,
-          0,
-        );
-      }
       return new Text(
-        `${theme.fg('success', fusion ? '✓ fusion answer' : '✓ delegate answer')} ${theme.fg('dim', `${String(details.answer_bytes ?? 0)}B · ${details.delivery}`)}`,
+        `${theme.fg('success', '✓ delegate answer')} ${theme.fg('dim', `${String(details.answer_bytes ?? 0)}B · ${details.delivery}`)}`,
         0,
         0,
       );

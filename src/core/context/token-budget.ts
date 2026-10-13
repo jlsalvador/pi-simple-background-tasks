@@ -1,17 +1,16 @@
 /**
  * Shared, dependency-free size arithmetic for prompt budgeting.
  *
- * Fusion and delegate both use the same pure estimator, but they pass distinct
- * scope profiles. Fusion may use a calibrated family rate only for measured
- * large prompts that remain in the calibration domain. Delegate uses a stricter
- * byte-ceiling profile because its 8,192-token floor is too small for relaxed
- * rates.
+ * The estimator is pure: calibrated family rates apply only to measured large
+ * prompts that remain in the calibration domain; delegate launch and
+ * conservative callers pass stricter scope profiles.
  *
- * Calibration basis: 882 real large Fusion prompts. The observed floors are
- * 2.047 B/tok for Anthropic and 3.400 B/tok for Codex. The shipped rates apply
- * a 15% haircut and add a provisional 512-token affine intercept. The
- * low-whitespace gate below is a corpus-derived heuristic proxy for dense ASCII
- * token density; it is not a tokenizer bound or guarantee.
+ * Calibration basis: 882 real large prompts collected by the upstream
+ * pi-background-tasks project. The observed floors are 2.047 B/tok for
+ * Anthropic and 3.400 B/tok for Codex. The shipped rates apply a 15% haircut
+ * and add a provisional 512-token affine intercept. The low-whitespace gate
+ * below is a corpus-derived heuristic proxy for dense ASCII token density; it
+ * is not a tokenizer bound or guarantee.
  */
 
 export const TOKEN_BUDGET_CALIBRATION_VERSION =
@@ -45,11 +44,7 @@ export const TOKEN_BUDGET_SEGMENT_KINDS = [
 ] as const;
 export type TokenBudgetSegmentKind = (typeof TOKEN_BUDGET_SEGMENT_KINDS)[number];
 
-export type TokenBudgetEstimatorScope =
-  | 'fusion'
-  | 'delegate_launch'
-  | 'delegate'
-  | 'conservative';
+export type TokenBudgetEstimatorScope = 'delegate_launch' | 'delegate' | 'conservative';
 export type TokenBudgetDominantByteClass =
   | 'normal'
   | 'dense_ascii'
@@ -335,7 +330,7 @@ function tokensAtRate(bytes: number, rateBytesPerTokenX100: number): number {
   return ceilDiv(bytes * TOKEN_BUDGET_RATE_SCALE, rateBytesPerTokenX100);
 }
 
-function conservativeFusionRate(configured: number): number {
+function conservativeRate(configured: number): number {
   return Math.min(configured, TOKEN_BUDGET_CONSERVATIVE_RATE_X100);
 }
 
@@ -562,7 +557,7 @@ function effectiveRateSource(input: {
   const configured = calibration.rate_bytes_per_token_x100;
   const familyBacked = calibration.provenance.backed;
   const backed = familyBacked && input.calibrationBacked;
-  const conservativeRate = conservativeFusionRate(configured);
+  const conservative = conservativeRate(configured);
   const gate = denseAsciiGate(input.profile);
   let source: TokenBudgetRateSource['source'];
   let effective: number;
@@ -590,18 +585,18 @@ function effectiveRateSource(input: {
     effective = Math.min(configured, TOKEN_BUDGET_PROVABLE_RATE_X100);
   } else if (input.profile.concrete_known_bytes < TOKEN_BUDGET_LARGE_PROMPT_MIN_BYTES) {
     source = 'conservative_small_prompt';
-    effective = conservativeRate;
+    effective = conservative;
   } else if (
     input.allowedInputTokens !== undefined &&
-    Math.floor((input.allowedInputTokens * conservativeRate) / TOKEN_BUDGET_RATE_SCALE) <
+    Math.floor((input.allowedInputTokens * conservative) / TOKEN_BUDGET_RATE_SCALE) <
       TOKEN_BUDGET_LARGE_PROMPT_MIN_BYTES
   ) {
     assertSafeNonNegativeInteger(input.allowedInputTokens, 'allowedInputTokens');
     source = 'conservative_capacity_guard';
-    effective = conservativeRate;
+    effective = conservative;
   } else if (gate.out_of_distribution) {
     source = 'conservative_dense_ascii_whitespace_gate';
-    effective = conservativeRate;
+    effective = conservative;
   } else {
     source = 'calibrated_large_window';
     effective = configured;
@@ -623,7 +618,7 @@ function effectiveRateSource(input: {
     family: input.family,
     configured_rate_bytes_per_token_x100: configured,
     effective_rate_bytes_per_token_x100: effective,
-    conservative_rate_bytes_per_token_x100: conservativeRate,
+    conservative_rate_bytes_per_token_x100: conservative,
     delegate_conservative_rate_bytes_per_token_x100: TOKEN_BUDGET_DELEGATE_CONSERVATIVE_RATE_X100,
     affine_f_tokens: calibration.affine_f_tokens,
     scope: input.scope,
@@ -678,7 +673,7 @@ function bucketTokenTotal(buckets: readonly TokenBudgetRateBucketEstimate[]): nu
 }
 
 export function estimateInputTokens(input: EstimateInputTokensInput): EstimateInputTokensResult {
-  const scope = input.scope ?? 'fusion';
+  const scope = input.scope ?? 'conservative';
   const normalized: NormalizedTokenBudgetSegment[] = [];
   const total: TokenBudgetByteClassBreakdown = {
     total_bytes: 0,
@@ -859,7 +854,7 @@ export function maxKnownTextBytesForTokens(input: {
   const rate = effectiveRateSource({
     family: input.family,
     allowedInputTokens: input.allowedInputTokens,
-    scope: input.scope ?? 'fusion',
+    scope: input.scope ?? 'conservative',
     profile: profileForSegments([], {
       total_bytes: 0,
       normal_bytes: 0,

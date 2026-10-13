@@ -38,10 +38,10 @@ export {
  * Delegate budgeting.
  *
  * A delegate child is a multi-turn, tool-using agent, so its budget has two
- * distinct phases rather than Fusion's single-shot stage forecast:
+ * distinct phases:
  *
  * 1. Launch admission checks the frozen seed, framing, and child system prompt
- *    with the same backed family calibration used by Fusion for large prompts.
+ *    with the backed family calibration for large prompts.
  * 2. A separate provable 1 B/token forecast sizes the transcript-growth runway
  *    used for explicit tool-result spilling.
  * 3. Runtime measurements are advisory. Package-owned growth is controlled
@@ -343,7 +343,7 @@ export interface DelegateGovernorVerdict {
  * Advisory runtime measurement for one prospective model call.
  *
  * This deliberately uses the calibrated large-prompt policy and never decides
- * whether transport may occur. Fusion's BUG-185 proved that a package-local
+ * whether transport may occur. The upstream project proved that a package-local
  * estimator must not reject a live provider payload by subtracting hypothetical
  * output. The delegate child uses this result for evidence and graceful
  * finalization while proactive spilling controls package-owned growth.

@@ -151,7 +151,7 @@ const BgRunParams = Type.Object({
   surviveReload: Type.Optional(
     Type.Boolean({
       description:
-        'Opt in to retaining this exact ordinary isAgent:false shell execution across a real same-process Pi reload. Default: false. Unsupported for agent, managed, delegate, Fusion, and attested tasks.',
+        'Opt in to retaining this exact ordinary isAgent:false shell execution across a real same-process Pi reload. Default: false. Unsupported for delegate and attested tasks.',
     }),
   ),
 });
@@ -403,20 +403,6 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     }
   });
 
-  if (config.features.fusion) {
-    const { registerFusionExtension } = await import('./fusion-extension.js');
-    registerFusionExtension(pi, {
-      startManagedTask: async (ctx, options) => {
-        currentCtx = ctx;
-        const nextRegistryCtx = registryContext(ctx);
-        currentRegistryCtx = nextRegistryCtx;
-        return registry.startManagedTask(nextRegistryCtx, options);
-      },
-      snapshot: (task) => registry.snapshot(task),
-      updateManagedTask: (task, state, line) => registry.updateManagedTask(task, state, line),
-      activationCloseFence,
-    });
-  }
 
   if (config.features.delegate) {
     const { registerDelegateExtension } = await import('./delegate-extension.js');
@@ -434,11 +420,10 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     });
   }
 
-  if (config.features.delegate || config.features.fusion) {
+  if (config.features.delegate) {
     const { registerBackgroundResultExtension } = await import('./delegate-extension.js');
     registerBackgroundResultExtension(pi, {
       resolveTask: (idOrPrefix) => registry.resolveTask(idOrPrefix),
-      claimFusionUsage: (task) => registry.claimFusionUsage(task),
       activationCloseFence,
     });
   }
@@ -565,7 +550,7 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
               return result;
             },
             rerunTask: async (task: BackgroundTaskForUi) => {
-              if (task.fusion !== undefined || task.delegate !== undefined) {
+              if (task.delegate !== undefined) {
                 throw new Error(
                   'Only shell-command tasks can be rerun from the dock; relaunch this typed workflow through its owning tool.',
                 );

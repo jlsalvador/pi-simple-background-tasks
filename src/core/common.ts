@@ -4,7 +4,6 @@ import { basename, delimiter, extname, isAbsolute, join, resolve, win32 } from '
 import { DEFAULT_MAX_BYTES } from '@earendil-works/pi-coding-agent';
 import type { BackgroundTaskChildProcess } from './registry.js';
 import type { DelegateBudgetRouteSource, DelegateExtensionMode } from './delegate/types.js';
-import type { FusionResultDetails, FusionUsage, FusionWorkflowId } from './fusion/types.js';
 
 export const TASK_STATUS_VALUES = ['running', 'completed', 'failed', 'killed'] as const;
 export const TERMINAL_TASK_STATUS_VALUES = ['completed', 'failed', 'killed'] as const;
@@ -249,7 +248,6 @@ export interface BgTaskSnapshot {
   shellPolicy?: ShellPolicySnapshot | undefined;
   attestationPath?: string | undefined;
   delegate?: DelegateTaskFacts | undefined;
-  fusion?: FusionTaskFacts | undefined;
 }
 
 export interface AttestedPiTaskFiles {
@@ -288,24 +286,6 @@ export interface DelegateTaskOutcome {
   toolCalls?: number | undefined;
 }
 
-/** Fusion-specific task facts surfaced through snapshots and `bg_result`. */
-export interface FusionTaskFacts {
-  runId: string;
-  workflow: FusionWorkflowId;
-  artifactDir: string;
-  artifactDirAbs: string;
-  state: string;
-  outcome?: FusionTaskOutcome | undefined;
-  /** Durable once-only accounting claim made by the first successful bg_result retrieval. */
-  usageDelivered: boolean;
-}
-
-export interface FusionTaskOutcome {
-  status: 'committed' | 'failed' | 'cancelled';
-  resultDetails?: FusionResultDetails | undefined;
-  usage?: FusionUsage | undefined;
-  error?: string | undefined;
-}
 
 export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   name: string;
@@ -347,17 +327,12 @@ export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   attestationPath?: string | undefined;
   attestedPi?: AttestedPiTaskFiles | undefined;
   delegate?: DelegateTaskFacts | undefined;
-  fusion?: FusionTaskFacts | undefined;
   /** In-memory same-process authority for an opted ordinary shell task; never serialized. */
   reloadExecution?: ReloadableShellExecutionV1 | undefined;
   /** Fresh-registry terminal host delivery state for an imported owner execution. */
   reloadHostDeliveryInFlight?: boolean | undefined;
   reloadHostDeliverySettled?: boolean | undefined;
   reloadHostNotificationSettled?: boolean | undefined;
-  /** Cancellation hook for an in-process managed task such as Fusion. */
-  managedCancel?: (() => void) | undefined;
-  managedCancelRequested?: boolean | undefined;
-  managedStopWaitMs?: number | undefined;
   metadataWriteChain?: Promise<void> | undefined;
   waiters: Array<() => void>;
 }
@@ -455,22 +430,6 @@ export interface StartTaskOptions {
   terminalPublicationGate?: Promise<void> | undefined;
 }
 
-/** Prepared delegate launch handed to the registry after preflight has succeeded. */
-export interface StartManagedTaskOptions {
-  id: string;
-  name: string;
-  command: string;
-  description?: string | undefined;
-  isAgent: boolean;
-  completion: Promise<void>;
-  cancel: () => void;
-  notifyOnCompletion: boolean;
-  triggerOnCompletion: boolean;
-  fusion: FusionTaskFacts;
-  stopWaitMs?: number | undefined;
-  /** Prevent terminal publication until the launch receipt handoff is observable. */
-  terminalPublicationGate?: Promise<void> | undefined;
-}
 
 export interface StartDelegateTaskOptions {
   name: string;
@@ -1186,7 +1145,6 @@ export function snapshot(task: BgTask): BgTaskSnapshot {
     shellPolicy: task.shellPolicy,
     attestationPath: task.attestationPath,
     delegate: task.delegate,
-    fusion: task.fusion,
   };
 }
 

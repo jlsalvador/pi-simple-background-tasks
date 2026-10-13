@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
  * Package-owned child Pi processes disable ambient extension discovery, so they
  * must explicitly load this safety entrypoint. It deliberately bypasses the
  * independently selectable ambient parent capability. Keeping path resolution
- * in one module prevents Fusion, delegation, and attested runs from deriving
+ * in one module prevents delegation and attested runs from deriving
  * different package paths.
  */
 export function resolveAnthropicAttributionExtensionPath(

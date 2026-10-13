@@ -201,7 +201,7 @@ export function resolveDelegateChildExtensionPath(
  * Tools the inspect capability permits.
  *
  * v1 is read-only by construction: no shell, no network, no edit/write, no
- * recursive delegation, no Fusion. The list is passed to `--tools`, so it is
+ * recursive delegation. The list is passed to `--tools`, so it is
  * enforced by the child's tool registry rather than by prompt text.
  */
 export const DELEGATE_INSPECT_TOOLS: readonly string[] = [
@@ -224,11 +224,6 @@ export const DELEGATE_FORBIDDEN_TOOLS: readonly string[] = [
   'bg_status',
   'bg_logs',
   'bg_run_pi_attested',
-  'fusion_brainstorm',
-  'fusion_reason',
-  'fusion_investigate',
-  'fusion_research',
-  'fusion_validate',
 ];
 
 export function delegateToolsFor(capability: DelegateCapability): readonly string[] {

@@ -1,7 +1,6 @@
 export const PI_BG_FEATURE_VALUES = Object.freeze([
   'process',
   'delegate',
-  'fusion',
   'attested',
   'attribution',
 ] as const);
@@ -21,7 +20,6 @@ export const PI_BG_DEFAULT_DOCK_SHORTCUT: PiBackgroundDockShortcut = 'shift+down
 export interface PiBackgroundFeatureSelection {
   readonly process: true;
   readonly delegate: boolean;
-  readonly fusion: boolean;
   readonly attested: boolean;
   readonly attribution: boolean;
 }
@@ -71,7 +69,7 @@ function parseFeatures(rawValue: string | undefined): PiBackgroundFeatureSelecti
     if (!(PI_BG_FEATURE_VALUES as readonly string[]).includes(token)) {
       invalidConfig(
         'PI_BG_FEATURES',
-        `contains unknown token ${boundedConfigValue(token)}; accepted tokens: ${accepted}; bg_result is derived from delegate or fusion`,
+        `contains unknown token ${boundedConfigValue(token)}; accepted tokens: ${accepted}; bg_result is derived from delegate`,
         raw,
       );
     }
@@ -88,7 +86,6 @@ function parseFeatures(rawValue: string | undefined): PiBackgroundFeatureSelecti
   return Object.freeze({
     process: true,
     delegate: selected.has('delegate'),
-    fusion: selected.has('fusion'),
     attested: selected.has('attested'),
     attribution: selected.has('attribution'),
   });

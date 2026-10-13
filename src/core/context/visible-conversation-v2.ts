@@ -17,12 +17,11 @@ import { canonicalJson } from '../canonical-json.js';
  * not occur. A semantic change requires a new transform id and a new
  * implementation, never a flag added here.
  *
- * Fusion's persisted artifact bytes are frozen against this implementation and
- * are proven bit-identical by `tests/unit/fusion-golden-bytes.test.ts`.
+ * Persisted delegate artifact bytes are frozen against this implementation.
  */
 export const VISIBLE_CONVERSATION_TRANSFORM_ID = 'visible-conversation-ledger-v2';
 
-export const CONVERSATION_IMAGE_OMISSION_PREFIX = '[Image omitted from fusion text transcript: ';
+export const CONVERSATION_IMAGE_OMISSION_PREFIX = '[Image omitted from conversation transcript: ';
 
 export const OMITTED_EVENT_KINDS = [
   'assistant_thinking',
@@ -140,7 +139,7 @@ export class UnsupportedConversationBlockError extends Error {
   readonly label: string;
 
   constructor(label: string) {
-    super(`fusion context projection encountered an unsupported conversation block: ${label}`);
+    super(`conversation projection encountered an unsupported conversation block: ${label}`);
     this.name = 'UnsupportedConversationBlockError';
     this.label = label;
   }
@@ -167,7 +166,7 @@ function lengthPrefixed(bytes: Buffer): Buffer {
 
 function ledgerLeafHash(index: number, record: OmittedEventRecord): Buffer {
   return createHash('sha256')
-    .update(Buffer.from('pi-fusion-ledger-leaf-v1\0', 'utf8'))
+    .update(Buffer.from('pi-bgt-ledger-leaf-v1\0', 'utf8'))
     .update(uint64be(index))
     .update(lengthPrefixed(Buffer.from(canonicalJson(record), 'utf8')))
     .digest();
@@ -175,7 +174,7 @@ function ledgerLeafHash(index: number, record: OmittedEventRecord): Buffer {
 
 function ledgerRootHash(leaves: readonly Buffer[]): string {
   const hash = createHash('sha256')
-    .update(Buffer.from('pi-fusion-ledger-root-v1\0', 'utf8'))
+    .update(Buffer.from('pi-bgt-ledger-root-v1\0', 'utf8'))
     .update(uint64be(leaves.length));
   for (const leaf of leaves) hash.update(leaf);
   return hash.digest('hex');

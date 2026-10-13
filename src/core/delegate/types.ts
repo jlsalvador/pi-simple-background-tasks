@@ -23,9 +23,9 @@ export const DELEGATE_MANIFEST_SCHEMA_VERSION = 'pi-background-tasks.delegate-ma
 
 /**
  * Delegate's own context policy id. It shares the frozen
- * `visible-conversation-ledger-v2` transform with Fusion but is a distinct
- * consumer identity, so a delegate artifact can never be mistaken for a Fusion
- * artifact and neither can claim the other's provenance.
+ * `visible-conversation-ledger-v2` transform and is a distinct consumer
+ * identity, so a delegate artifact can never be mistaken for an artifact of
+ * another consumer and cannot claim its provenance.
  */
 export const DELEGATE_CONTEXT_POLICY_ID = 'delegate-inspect-v1';
 export const DELEGATE_BRANCH_FILTER_ID = 'exclude-active-delegate-batch-v1';
