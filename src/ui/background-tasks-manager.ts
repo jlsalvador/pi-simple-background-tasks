@@ -202,9 +202,6 @@ export interface TaskManagerOptions {
   stopAllRunning: () => Promise<StopAllResult>;
   rerunTask: (task: BgTask) => Promise<BgTask>;
   showOutputPath: (task: BgTask) => void;
-  markSeen: (taskId: string) => void;
-  markFinishedSeen: (taskIds: string[]) => void;
-  isSeen: (taskId: string) => boolean;
 }
 
 export class BackgroundTasksManager implements Component {
@@ -235,7 +232,6 @@ export class BackgroundTasksManager implements Component {
     if (options.initialTaskId) {
       this.detailTaskId = options.initialTaskId;
       this.mode = 'detail';
-      this.options.markSeen(options.initialTaskId);
       void this.refreshTail();
     } else {
       const allTasks = options.getTasks();
@@ -426,7 +422,6 @@ export class BackgroundTasksManager implements Component {
     this.detailFollow = true;
     this.detailScrollTop = 0;
     this.tailError = undefined;
-    this.options.markSeen(taskId);
     void this.refreshTail();
     this.tui.requestRender();
   }
@@ -599,25 +594,11 @@ export class BackgroundTasksManager implements Component {
     const allTasks = this.options.getTasks();
     const allRunning = allTasks.filter((task) => task.status === 'running').length;
     const historyCount = allTasks.length - allRunning;
-    const unseenFailed = allTasks.filter(
-      (task) => task.status === 'failed' && !this.options.isSeen(task.id),
-    ).length;
-    const unseenStopped = allTasks.filter(
-      (task) => task.status === 'killed' && !this.options.isSeen(task.id),
-    ).length;
-    const unseenDone = allTasks.filter(
-      (task) => task.status === 'completed' && !this.options.isSeen(task.id),
-    ).length;
-    const unread = unseenFailed + unseenStopped + unseenDone;
     const subtitleParts = this.showHistory
       ? [`${formatCount(allRunning)} active`, `${formatCount(historyCount)} history`]
       : allRunning > 0
         ? [`${formatCount(allRunning)} active shell${pluralSuffix(allRunning)}`]
         : ['No active shells'];
-    if (unseenFailed) subtitleParts.push(`${formatCount(unseenFailed)} failed`);
-    if (unseenStopped) subtitleParts.push(`${formatCount(unseenStopped)} stopped`);
-    if (unseenDone) subtitleParts.push(`${formatCount(unseenDone)} done`);
-    if (unread) subtitleParts.push(`${formatCount(unread)} unread`);
     const subtitle = subtitleParts.join(' · ');
 
     const body: string[] = [];
@@ -638,8 +619,6 @@ export class BackgroundTasksManager implements Component {
         const index = this.listScroll + i;
         const selected = index === this.selectedIndex;
         const pointer = selected ? '›' : ' ';
-        const unseen = task.status !== 'running' && !this.options.isSeen(task.id);
-        const unreadMark = unseen ? this.theme.fg('warning', '●') : ' ';
         const rawName = truncateChars(taskDisplayName(task), maxNameWidth);
         const name =
           task.status === 'failed'
@@ -664,7 +643,7 @@ export class BackgroundTasksManager implements Component {
         const activityText = activity ? ` ${this.theme.fg('warning', activity)}` : '';
         const exit =
           task.status !== 'running' ? this.theme.fg('dim', formatExitCodeText(task.exitCode)) : '';
-        let row = ` ${pointer} ${unreadMark} ${name} ${this.theme.fg('dim', task.id)} ${this.theme.fg('dim', '·')} ${status}${exit} ${this.theme.fg('dim', `${runtime} ${size}`)}${contextText}${modelText}${tokenText}${toolText}${activityText}`;
+        let row = ` ${pointer} ${name} ${this.theme.fg('dim', task.id)} ${this.theme.fg('dim', '·')} ${status}${exit} ${this.theme.fg('dim', `${runtime} ${size}`)}${contextText}${modelText}${tokenText}${toolText}${activityText}`;
         if (selected) row = lightBlue(padAnsi(truncateToWidth(row, width - 4), width - 4));
         body.push(row);
       }

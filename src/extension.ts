@@ -22,8 +22,6 @@ import {
   deriveCompletionDeliveryGuidance,
   deriveTaskNameFromCommand,
   formatSnapshotList,
-  formatUpdateSegment,
-  isNewerVersion,
   MAX_LOG_BYTES,
   normalizeMaxBytes,
   normalizeTaskName,
@@ -36,7 +34,7 @@ import {
   taskDisplayName,
   truncateChars,
 } from './core/common.js';
-import { dockShortcutFooterHint, resolveBackgroundTasksConfig } from './core/config.js';
+import { resolveBackgroundTasksConfig } from './core/config.js';
 import {
   type BackgroundTaskExtensionService,
   installBackgroundTaskExtensionApi,
@@ -48,11 +46,6 @@ import {
   makeReloadShellIdentity,
 } from './core/reload-shell-owner.js';
 import { createShellPolicyGuidanceHandler, initializeShellPolicy } from './core/shell-policy.js';
-import {
-  type FetchLatestVersionOptions,
-  fetchLatestVersion,
-  readPackageInfo,
-} from './core/update-check.js';
 import type { BackgroundTaskForUi, TaskManagerResult } from './ui/background-tasks-manager.js';
 
 /**
@@ -66,21 +59,7 @@ import type { BackgroundTaskForUi, TaskManagerResult } from './ui/background-tas
  * - No PID/file adoption, process-restart survival, or crash recovery.
  */
 
-const STATUS_INTERVAL_MS = 1000;
 const COMMAND_PREVIEW_CHARS = 90;
-const GIT_INSTALL_TARGET = 'git:github.com/ismailsaleekh/pi-background-tasks';
-
-const packageInfo = readPackageInfo(new URL('../package.json', import.meta.url), (error) => {
-  console.error(`[background-tasks] failed to read package version: ${error.message}`);
-});
-const PACKAGE_NAME = packageInfo.name ?? 'pi-background-tasks';
-const PACKAGE_VERSION = packageInfo.version;
-const LIGHT_BLUE_BG = '\x1b[48;2;183;223;255m';
-const LIGHT_BLUE_FG = '\x1b[38;2;11;70;110m';
-const ANSI_RESET = '\x1b[0m';
-function lightBlue(value: string): string {
-  return `${LIGHT_BLUE_BG}${LIGHT_BLUE_FG}${value}${ANSI_RESET}`;
-}
 
 function textContent(text: string) {
   return [{ type: 'text' as const, text }];
@@ -181,20 +160,13 @@ function renderPlainResult(result: TextToolResult, options: ToolRenderResultOpti
 
 export default async function backgroundTasksExtension(pi: ExtensionAPI): Promise<void> {
   const config = resolveBackgroundTasksConfig(process.cwd());
-  const dockEntryHint = dockShortcutFooterHint(config.dockShortcut);
   const shellPolicy = initializeShellPolicy();
   const reloadShellOwner = getProcessReloadShellOwnerV1();
   pi.on('before_agent_start', createShellPolicyGuidanceHandler(shellPolicy));
-  const seenTaskIds = new Set<string>();
-  let currentCtx: ExtensionContext | undefined;
   let currentRegistryCtx: BackgroundTaskContext | undefined;
   let activationLease: ReloadShellActivationLeaseV1 | undefined;
   let activationIdentity: ReloadShellIdentityV1 | undefined;
   let pendingActivationClaim: ReloadShellActivationClaimV1 | undefined;
-  let dockOpen = false;
-  let statusInterval: NodeJS.Timeout | undefined;
-  let latestKnownVersion: string | undefined;
-  let updateCheckStarted = false;
   let disposed = false;
   let shutdownCleanupStarted = false;
   let reloadHandoffFailed = false;
@@ -213,9 +185,6 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
   });
 
   const registry = new BackgroundTaskRegistry({
-    onChange: () => {
-      updateUi();
-    },
     sendCompletionNotification: (message, options) => {
       pi.sendMessage(message, options);
     },
@@ -269,12 +238,7 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     }
     // Teardown remains active on repeated calls so even a handle assigned by a
     // racing continuation is still disposed rather than hidden by idempotence.
-    currentCtx = undefined;
     currentRegistryCtx = undefined;
-    if (statusInterval !== undefined) {
-      clearInterval(statusInterval);
-      statusInterval = undefined;
-    }
     if (handoffError !== undefined) throw handoffError;
   };
 
@@ -313,7 +277,6 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
           'a repeated session_start changed the bound reload owner identity without shutdown',
         );
       }
-      currentCtx = ctx;
       currentRegistryCtx = nextRegistryCtx;
       return;
     }
@@ -344,7 +307,6 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
       pendingActivationClaim = undefined;
       activationLease = lease;
       activationIdentity = identity;
-      currentCtx = ctx;
       currentRegistryCtx = nextRegistryCtx;
     } catch (error) {
       registry.abortReloadActivation(claim);
@@ -364,83 +326,11 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     }
   });
 
-  function unseenFinishedTasks(): BgTask[] {
-    return registry
-      .allTasks()
-      .filter((task) => task.status !== 'running' && !seenTaskIds.has(task.id));
-  }
-
-  function clearFinishedNotices(ctx = currentCtx): number {
-    const unseen = unseenFinishedTasks();
-    for (const task of unseen) seenTaskIds.add(task.id);
-    updateUi(ctx);
-    return unseen.length;
-  }
-
-  function notifyClearFinishedNotices(ctx: ExtensionContext): void {
-    currentCtx = ctx;
-    const cleared = clearFinishedNotices(ctx);
-    if (!ctx.hasUI) return;
-    ctx.ui.notify(
-      cleared > 0
-        ? `Cleared ${String(cleared)} finished background task notice${cleared === 1 ? '' : 's'}.`
-        : 'No finished background task notices to clear.',
-      cleared > 0 ? 'info' : 'warning',
-    );
-  }
-
-  function updateUi(ctx = currentCtx): void {
-    if (registry.isShuttingDown() || !ctx) return;
-    try {
-      if (!ctx.hasUI) return;
-      const allTasks = registry.allTasks();
-      const running = allTasks.filter((task) => task.status === 'running');
-      const unseenFailed = allTasks.filter(
-        (task) => task.status === 'failed' && !seenTaskIds.has(task.id),
-      );
-      const unseenStopped = allTasks.filter(
-        (task) => task.status === 'killed' && !seenTaskIds.has(task.id),
-      );
-      const unseenDone = allTasks.filter(
-        (task) => task.status === 'completed' && !seenTaskIds.has(task.id),
-      );
-      const unseenFinishedCount = unseenFailed.length + unseenStopped.length + unseenDone.length;
-      const updateSegment = formatUpdateSegment(latestKnownVersion, PACKAGE_VERSION ?? '');
-      ctx.ui.setWidget('background-tasks', undefined);
-      if (running.length === 0 && unseenFinishedCount === 0) {
-        ctx.ui.setStatus(
-          'background-tasks',
-          updateSegment ? lightBlue(` bg ${updateSegment} `) : undefined,
-        );
-        return;
-      }
-
-      const parts: string[] = [];
-      if (running.length > 0) parts.push(`${String(running.length)} running`);
-      if (unseenFailed.length > 0) parts.push(`${String(unseenFailed.length)} failed`);
-      if (unseenStopped.length > 0) parts.push(`${String(unseenStopped.length)} stopped`);
-      if (unseenDone.length > 0) parts.push(`${String(unseenDone.length)} done`);
-      const entryHint = dockOpen
-        ? 'focused'
-        : `${dockEntryHint}${unseenFinishedCount > 0 ? ' · /bg-clear' : ''}`;
-      const segments = [...parts, entryHint];
-      if (updateSegment) segments.push(updateSegment);
-      const label = ` bg ${segments.join(' · ')} `;
-      ctx.ui.setStatus('background-tasks', lightBlue(label));
-    } catch (error) {
-      console.error(
-        `[background-tasks] UI update failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      currentCtx = undefined;
-    }
-  }
-
   async function startTask(
     ctx: ExtensionContext,
     command: string,
     options: StartTaskOptions = {},
   ): Promise<BgTask> {
-    currentCtx = ctx;
     const nextRegistryCtx = registryContext(ctx);
     currentRegistryCtx = nextRegistryCtx;
     return registry.startTask(nextRegistryCtx, command, options);
@@ -450,7 +340,6 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     ctx: ExtensionCommandContext | ExtensionContext,
     initialTaskId?: string,
   ): Promise<void> {
-    currentCtx = ctx;
     if (!ctx.hasUI) {
       ctx.ui.notify(
         'Background task manager requires an interactive Pi UI. Use /jobs, /logs, or the bg_status/bg_logs tools in non-interactive mode.',
@@ -459,75 +348,56 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
       return;
     }
     const { BackgroundTasksManager } = await taskManagerLoader.run((runtime) => runtime);
-    dockOpen = true;
-    updateUi(ctx);
-    try {
-      await ctx.ui.custom<TaskManagerResult>(
-        (tui, theme, _keybindings, done) => {
-          const managerOptions = {
-            getTasks: () => registry.allTasks(),
-            stopTask: async (task: BackgroundTaskForUi) => {
-              await registry.stopTask(registry.resolveTask(task.id), 'user');
-              updateUi(ctx);
-            },
-            stopAllRunning: async () => {
-              const result = await registry.stopAllRunning('user');
-              updateUi(ctx);
-              return result;
-            },
-            rerunTask: async (task: BackgroundTaskForUi) => {
-              const rerunOptions: StartTaskOptions = {
-                name: taskDisplayName(task),
-                isAgent: task.isAgent,
-                surviveReload: task.surviveReload,
-                notifyOnCompletion: true,
-                triggerOnCompletion: false,
-              };
-              if (task.description !== undefined) rerunOptions.description = task.description;
-              if (task.timeoutSeconds !== undefined)
-                rerunOptions.timeoutSeconds = task.timeoutSeconds;
-              const rerun = await startTask(ctx, task.command, rerunOptions);
-              updateUi(ctx);
-              return rerun;
-            },
-            showOutputPath: (task: BackgroundTaskForUi) => {
-              ctx.ui.notify(
-                `Output path for ${taskDisplayName(task)} (${task.id}):\n${task.outputPath}`,
-                'info',
-              );
-            },
-            markSeen: (taskId: string) => {
-              seenTaskIds.add(taskId);
-              updateUi(ctx);
-            },
-            markFinishedSeen: (taskIds: string[]) => {
-              for (const taskId of taskIds) seenTaskIds.add(taskId);
-              updateUi(ctx);
-            },
-            isSeen: (taskId: string) => seenTaskIds.has(taskId),
-          };
-          if (initialTaskId)
-            return new BackgroundTasksManager(tui, theme, done, {
-              ...managerOptions,
-              initialTaskId,
-            });
-          return new BackgroundTasksManager(tui, theme, done, managerOptions);
-        },
-        {
-          overlay: true,
-          overlayOptions: {
-            anchor: 'bottom-center',
-            width: '96%',
-            minWidth: 64,
-            maxHeight: '60%',
-            margin: { bottom: 1, left: 1, right: 1 },
+    await ctx.ui.custom<TaskManagerResult>(
+      (tui, theme, _keybindings, done) => {
+        const managerOptions = {
+          getTasks: () => registry.allTasks(),
+          stopTask: async (task: BackgroundTaskForUi) => {
+            await registry.stopTask(registry.resolveTask(task.id), 'user');
           },
+          stopAllRunning: async () => {
+            const result = await registry.stopAllRunning('user');
+            return result;
+          },
+          rerunTask: async (task: BackgroundTaskForUi) => {
+            const rerunOptions: StartTaskOptions = {
+              name: taskDisplayName(task),
+              isAgent: task.isAgent,
+              surviveReload: task.surviveReload,
+              notifyOnCompletion: true,
+              triggerOnCompletion: false,
+            };
+            if (task.description !== undefined) rerunOptions.description = task.description;
+            if (task.timeoutSeconds !== undefined)
+              rerunOptions.timeoutSeconds = task.timeoutSeconds;
+            const rerun = await startTask(ctx, task.command, rerunOptions);
+            return rerun;
+          },
+          showOutputPath: (task: BackgroundTaskForUi) => {
+            ctx.ui.notify(
+              `Output path for ${taskDisplayName(task)} (${task.id}):\n${task.outputPath}`,
+              'info',
+            );
+          },
+        };
+        if (initialTaskId)
+          return new BackgroundTasksManager(tui, theme, done, {
+            ...managerOptions,
+            initialTaskId,
+          });
+        return new BackgroundTasksManager(tui, theme, done, managerOptions);
+      },
+      {
+        overlay: true,
+        overlayOptions: {
+          anchor: 'bottom-center',
+          width: '96%',
+          minWidth: 64,
+          maxHeight: '60%',
+          margin: { bottom: 1, left: 1, right: 1 },
         },
-      );
-    } finally {
-      dockOpen = false;
-      updateUi(ctx);
-    }
+      },
+    );
   }
 
   pi.registerMessageRenderer<BgTaskSnapshot>(
@@ -555,53 +425,15 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     },
   );
 
-  async function scheduleUpdateCheck(ctx: ExtensionContext): Promise<void> {
-    if (disposed || updateCheckStarted) return;
-    updateCheckStarted = true;
-    const env = process.env;
-    if (env.PI_BG_DISABLE_UPDATE_CHECK === '1') return;
-    if (env.PI_OFFLINE === '1') return;
-    if (!PACKAGE_VERSION) return;
-    const options: FetchLatestVersionOptions = {
-      packageName: PACKAGE_NAME,
-      onError: (error) => {
-        console.error(`[background-tasks] update check skipped: ${error.message}`);
-      },
-    };
-    const registryUrl = env.PI_BG_REGISTRY_URL;
-    if (registryUrl) options.registryUrl = registryUrl;
-    const latest = await fetchLatestVersion(options);
-    if (disposed) return;
-    if (latest && isNewerVersion(latest, PACKAGE_VERSION)) {
-      latestKnownVersion = latest;
-      updateUi(ctx);
-    }
-  }
-
   pi.on('session_start', async (_event, ctx) => {
     // Pi replacement binds a fresh extension instance. Never revive this old
     // activation if a late lifecycle dispatch reaches it after shutdown.
     if (disposed) return;
     registry.setShuttingDown(false);
-    currentCtx = ctx;
     const nextRegistryCtx = currentRegistryCtx ?? registryContext(ctx);
     currentRegistryCtx = nextRegistryCtx;
     await registry.ensureRuntimeDir(nextRegistryCtx);
     if (disposed) return;
-    updateUi(ctx);
-    if (disposed) return;
-    if (statusInterval !== undefined) clearInterval(statusInterval);
-    if (disposed) return;
-    const nextStatusInterval = setInterval(() => {
-      updateUi();
-    }, STATUS_INTERVAL_MS);
-    if (disposed) {
-      clearInterval(nextStatusInterval);
-      return;
-    }
-    statusInterval = nextStatusInterval;
-    // One-shot, non-blocking: never awaited on the session-start path or the status tick.
-    if (!disposed) void scheduleUpdateCheck(ctx);
   });
 
   pi.on('session_shutdown', async (event, ctx) => {
@@ -696,40 +528,9 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     },
   });
 
-  pi.registerCommand('bg-clear', {
-    description: 'Clear finished background task footer notices',
-    handler: (_args, ctx) => {
-      notifyClearFinishedNotices(ctx);
-      return Promise.resolve();
-    },
-  });
-
-  pi.registerCommand('bg-update', {
-    description: 'Show how to update pi-background-tasks to the latest published version',
-    handler: (_args, ctx) => {
-      const current = PACKAGE_VERSION ?? 'unknown';
-      const latest = latestKnownVersion;
-      const pinnedNpm = latest ? `${PACKAGE_NAME}@${latest}` : `${PACKAGE_NAME}@<version>`;
-      const lines = [
-        latest
-          ? `pi-background-tasks ${current} is installed; ${latest} is the latest published version.`
-          : `pi-background-tasks ${current} is installed.`,
-        'Update from npm:',
-        `  pi install npm:${PACKAGE_NAME}@latest`,
-        `  pi install npm:${pinnedNpm}`,
-        'Git releases are independent of npm versions; use main only when you want current repository state:',
-        `  pi install ${GIT_INSTALL_TARGET}@main`,
-        `For a pinned git release, first verify the tag exists, then use ${GIT_INSTALL_TARGET}@<existing-tag>.`,
-        'This command only prints update instructions; it does not install or self-update.',
-      ];
-      ctx.ui.notify(lines.join('\n'), 'info');
-      return Promise.resolve();
-    },
-  });
-
   if (config.dockShortcut === 'shift+down') {
     pi.registerShortcut('shift+down' satisfies KeyId, {
-      description: 'Open focused background task footer dock',
+      description: 'Open the background task manager',
       handler: async (ctx) => {
         await openTaskManager(ctx);
       },
@@ -738,30 +539,20 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
 
   if (config.dockShortcut === 'ctrl+alt+b') {
     pi.registerShortcut('ctrl+alt+b' satisfies KeyId, {
-      description: 'Open focused background task footer dock',
+      description: 'Open the background task manager',
       handler: async (ctx) => {
         await openTaskManager(ctx);
       },
     });
   }
 
-  pi.registerShortcut('ctrl+alt+c' satisfies KeyId, {
-    description:
-      'Clear finished background task footer notices (terminal-dependent fallback for /bg-clear)',
-    handler: (ctx) => {
-      notifyClearFinishedNotices(ctx);
-    },
-  });
-
   pi.registerCommand('jobs', {
     description: 'List running and recent background tasks',
     handler: (_args, ctx) => {
-      currentCtx = ctx;
       ctx.ui.notify(
         formatSnapshotList(registry.allTasks().map((task) => registry.snapshot(task))),
         'info',
       );
-      updateUi(ctx);
       return Promise.resolve();
     },
   });
@@ -782,7 +573,6 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     },
     handler: async (args, ctx) => {
       try {
-        currentCtx = ctx;
         const [id, bytes] = args.trim().split(/\s+/, 2);
         const task = registry.resolveTask(id ?? '');
         const maxBytes = normalizeMaxBytes(Number(bytes), DEFAULT_LOG_BYTES);
@@ -813,14 +603,12 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     },
     handler: async (args, ctx) => {
       try {
-        currentCtx = ctx;
         const task = registry.resolveTask(args.trim());
         await registry.stopTask(task, 'user');
         ctx.ui.notify(
           `Killed ${taskDisplayName(task)} (${task.id}). Output: ${task.outputPath}`,
           'info',
         );
-        updateUi(ctx);
       } catch (error) {
         ctx.ui.notify(
           `Background kill error: ${error instanceof Error ? error.message : String(error)}`,
