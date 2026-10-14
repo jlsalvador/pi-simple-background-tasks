@@ -520,14 +520,6 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     },
   });
 
-  pi.registerCommand('bg-tasks', {
-    description: 'Open the background task manager UI',
-    handler: async (args, ctx) => {
-      const taskId = optionalTrimmed(args);
-      await openTaskManager(ctx, taskId);
-    },
-  });
-
   if (config.dockShortcut === 'shift+down') {
     pi.registerShortcut('shift+down' satisfies KeyId, {
       description: 'Open the background task manager',

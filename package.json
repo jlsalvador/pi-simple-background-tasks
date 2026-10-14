@@ -5,9 +5,6 @@
   "type": "module",
   "license": "ISC",
   "author": "José Luis Salvador Rufo <salvador.joseluis@gmail.com>",
-  "publishConfig": {
-    "access": "public"
-  },
   "keywords": [
     "pi-package",
     "pi-extension",
