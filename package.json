@@ -1,10 +1,10 @@
 {
-  "name": "pi-background-tasks",
-  "version": "2.6.9",
-  "description": "Pi extension for durable background shell tasks.",
+  "name": "pi-simple-background-tasks",
+  "version": "0.1.0",
+  "description": "Durable background shell tasks for Pi. KISS fork of pi-background-tasks.",
   "type": "module",
   "license": "ISC",
-  "author": "Ismail <ismailsalikhodjaev@gmail.com>",
+  "author": "José Luis Salvador Rufo <salvador.joseluis@gmail.com>",
   "publishConfig": {
     "access": "public"
   },
@@ -16,74 +16,29 @@
     "coding-agent",
     "shell",
     "tasks",
-    "attestation",
-    "fusion",
-    "reason",
-    "investigate",
-    "research",
-    "multi-model",
     "task-manager",
     "pi-dev"
   ],
-  "homepage": "https://github.com/ismailsaleekh/pi-background-tasks#readme",
+  "homepage": "https://github.com/jlsalvador/pi-simple-background-tasks#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ismailsaleekh/pi-background-tasks.git"
+    "url": "git+https://github.com/jlsalvador/pi-simple-background-tasks.git"
   },
   "bugs": {
-    "url": "https://github.com/ismailsaleekh/pi-background-tasks/issues"
+    "url": "https://github.com/jlsalvador/pi-simple-background-tasks/issues"
   },
   "files": [
-    "dist/",
-    "extensions/",
     "src/",
     "README.md",
-    "TESTING.md",
-    "TEST_PLAN.md",
-    "PUBLISHING.md",
-    "LICENSE",
-    "THIRD_PARTY_NOTICES.md",
-    "docs/",
-    "BACKGROUND-TASKS-INSTRUCTIONS.md",
-    "logo.png"
+    "LICENSE"
   ],
   "scripts": {
-    "build:runtime": "node scripts/build-runtime.mjs",
-    "typecheck": "tsc --noEmit",
-    "test:type-safety": "tsx --test tests/package/type-safety.test.ts",
-    "test:unit": "tsx --test tests/unit/**/*.test.ts",
-    "test:sdk": "npm run build:runtime && tsx --test --test-concurrency=1 tests/sdk/**/*.test.ts",
-    "test:rpc": "tsx --test tests/rpc/**/*.test.ts",
-    "test:component": "tsx --test tests/component/**/*.test.ts",
-    "test:package": "npm run build:runtime && tsx --test tests/package/**/*.test.ts",
-    "test": "npm run typecheck && npm run test:type-safety && npm run test:unit && npm run test:sdk && npm run test:rpc && npm run test:component && npm run test:package && npm run test:hook-contract",
-    "test:pty": "tsx --test tests/pty/**/*.test.ts",
-    "test:windows": "tsx --test tests/windows/**/*.test.ts",
-    "test:agent-loop": "tsx --test --test-concurrency=1 tests/scripted-provider/**/*.test.ts",
-    "test:full": "npm run test && npm run test:pty && npm run test:agent-loop",
-    "smoke": "npm run build:runtime && tsx scripts/smoke.ts",
-    "smoke:large-context": "tsx scripts/large-context-smoke.ts",
-    "pack:dry-run": "npm pack --dry-run",
-    "lint": "biome check .",
-    "lint:fix": "biome check --write .",
-    "format:check": "biome format .",
-    "test:compat": "npm run build:runtime && tsx scripts/test-compat.ts",
-    "test:pnpm-pack": "npm run build:runtime && node scripts/test-pnpm-pack-install.mjs",
-    "test:hook-contract": "tsx --test --test-concurrency=1 tests/scripted-provider/pi-hook-contract.test.ts",
-    "docs:generate": "node scripts/docs/generate.mjs",
-    "docs:verify": "node scripts/docs/verify.mjs",
-    "docs:verify:attestations": "node scripts/docs/verify.mjs --require-attestations",
-    "docs:attest/record": "node scripts/docs/attest.mjs",
-    "docs:attest": "npm run docs:attest/record",
-    "test:docs": "tsx --test tests/unit/docs-gate.test.ts tests/package/docs-contract.test.ts",
-    "payload:check": "npm run build:runtime && node scripts/check-package-payload.mjs",
-    "release:check-version": "node scripts/check-release-version.mjs",
-    "prepack": "npm run build:runtime && npm run docs:verify && node scripts/check-package-payload.mjs"
+    "check": "tsc --noEmit && biome check .",
+    "fix": "biome check --write ."
   },
   "pi": {
-    "image": "https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png",
     "extensions": [
-      "./dist/extensions/background-tasks.js"
+      "./src/extension.ts"
     ]
   },
   "peerDependencies": {
