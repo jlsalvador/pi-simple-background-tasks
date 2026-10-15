@@ -426,6 +426,9 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
               'info',
             );
           },
+          deleteTask: async (task: BackgroundTaskForUi) => {
+            await registry.cleanupFinishedTasks('one', task.id);
+          },
         };
         if (initialTaskId)
           return new BackgroundTasksManager(tui, theme, done, {

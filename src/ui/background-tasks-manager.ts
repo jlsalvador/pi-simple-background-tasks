@@ -202,6 +202,7 @@ export interface TaskManagerOptions {
   stopAllRunning: () => Promise<StopAllResult>;
   rerunTask: (task: BgTask) => Promise<BgTask>;
   showOutputPath: (task: BgTask) => void;
+  deleteTask: (task: BgTask) => Promise<void>;
 }
 
 export class BackgroundTasksManager implements Component {
@@ -344,6 +345,11 @@ export class BackgroundTasksManager implements Component {
       if (task) this.showOutputPathFromUi(task);
       return;
     }
+    if (data === 'd' || data === 'D') {
+      const task = tasks[this.selectedIndex];
+      if (task) void this.deleteTaskFromUi(task);
+      return;
+    }
     if (data === 'h' || data === 'H') {
       this.showHistory = !this.showHistory;
       this.selectedIndex = 0;
@@ -445,6 +451,25 @@ export class BackgroundTasksManager implements Component {
       this.actionMessage = `Stopped ${taskDisplayName(task)}.`;
     } catch (error) {
       this.actionMessage = `Stop failed: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    this.tui.requestRender();
+  }
+
+  private async deleteTaskFromUi(task: BgTask): Promise<void> {
+    if (task.status === 'running') {
+      this.actionMessage = `${taskDisplayName(task)} is running; stop it first (k).`;
+      this.tui.requestRender();
+      return;
+    }
+    this.actionMessage = `Deleting ${taskDisplayName(task)}…`;
+    this.tui.requestRender();
+    try {
+      await this.options.deleteTask(task);
+      const tasks = this.currentTasks();
+      if (this.selectedIndex >= tasks.length) this.selectedIndex = Math.max(0, tasks.length - 1);
+      this.actionMessage = `Deleted ${taskDisplayName(task)}.`;
+    } catch (error) {
+      this.actionMessage = `Delete failed: ${error instanceof Error ? error.message : String(error)}`;
     }
     this.tui.requestRender();
   }
@@ -663,7 +688,7 @@ export class BackgroundTasksManager implements Component {
       'bg tasks focused',
       subtitle,
       body,
-      ` ${this.theme.fg('dim', `↑/↓ select · Enter logs · k stop · a stop all · h ${this.showHistory ? 'hide' : 'show'} history · R rerun · c path · x close`)}`,
+      ` ${this.theme.fg('dim', `↑/↓ select · Enter logs · k stop · a stop all · d delete · h ${this.showHistory ? 'hide' : 'show'} history · R rerun · c path · x close`)}`,
       width,
     );
   }
