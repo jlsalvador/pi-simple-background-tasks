@@ -396,6 +396,10 @@ export class BackgroundTasksManager implements Component {
       void this.stopTaskFromUi(task);
       return;
     }
+    if (data === 'd' || data === 'D') {
+      if (task) void this.deleteTaskFromUi(task);
+      return;
+    }
     if ((data === 'c' || data === 'C') && task) {
       this.showOutputPathFromUi(task);
     }
@@ -611,6 +615,39 @@ export class BackgroundTasksManager implements Component {
     return lines;
   }
 
+  /** Contextual action for the selected task: stop while running, delete once it ends. */
+  private taskActionLabel(task: BgTask | undefined): string {
+    if (!task) return '';
+    return task.status === 'running' ? 'k stop' : 'd delete';
+  }
+
+  private listHelp(selected: BgTask | undefined): string {
+    const parts = [
+      '↑/↓ select',
+      'Enter logs',
+      this.taskActionLabel(selected),
+      'a stop all',
+      `h ${this.showHistory ? 'hide' : 'show'} history`,
+      'R rerun',
+      'c path',
+      'x close',
+    ];
+    return parts.filter((part) => part.length > 0).join(' · ');
+  }
+
+  private detailHelp(task: BgTask): string {
+    const parts = [
+      '↑/↓ scroll',
+      '← list',
+      'r refresh',
+      this.taskActionLabel(task),
+      'R rerun',
+      'c path',
+      'x close',
+    ];
+    return parts.join(' · ');
+  }
+
   private renderList(width: number): string[] {
     const tasks = this.currentTasks();
     if (this.selectedIndex >= tasks.length) this.selectedIndex = Math.max(0, tasks.length - 1);
@@ -688,7 +725,7 @@ export class BackgroundTasksManager implements Component {
       'bg tasks focused',
       subtitle,
       body,
-      ` ${this.theme.fg('dim', `↑/↓ select · Enter logs · k stop · a stop all · d delete · h ${this.showHistory ? 'hide' : 'show'} history · R rerun · c path · x close`)}`,
+      ` ${this.theme.fg('dim', this.listHelp(tasks[this.selectedIndex]))}`,
       width,
     );
   }
@@ -737,7 +774,7 @@ export class BackgroundTasksManager implements Component {
     body.push(...this.renderOutputBox(width - 4));
     if (this.actionMessage) body.push(this.theme.fg('warning', ` ${this.actionMessage}`));
     const subtitle = `${task.id} · ${task.status === 'running' ? 'live tail refreshes every second' : 'final output'}`;
-    const footer = ` ${this.theme.fg('dim', '↑/↓ scroll · ← list · r refresh · k stop · R rerun · c path · x close')}`;
+    const footer = ` ${this.theme.fg('dim', this.detailHelp(task))}`;
     return this.frame(`bg: ${truncateChars(name, 64)}`, subtitle, body, footer, width);
   }
 
