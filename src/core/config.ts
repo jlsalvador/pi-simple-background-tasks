@@ -3,26 +3,15 @@ import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { CONFIG_DIR_NAME, getAgentDir } from '@earendil-works/pi-coding-agent';
 
-export const PI_BG_DOCK_SHORTCUT_VALUES = Object.freeze([
-  'shift+down',
-  'ctrl+alt+b',
-  'off',
-] as const);
-export type PiBackgroundDockShortcut = (typeof PI_BG_DOCK_SHORTCUT_VALUES)[number];
-
-export const PI_BG_DEFAULT_DOCK_SHORTCUT: PiBackgroundDockShortcut = 'shift+down';
-
 /** Config file name this extension reads, following the PI extension-config pattern. */
 export const PI_BG_CONFIG_FILE_NAME = 'pi-background-tasks.json';
 
 export interface PiBackgroundConfig {
   readonly tasksDir: string;
-  readonly dockShortcut: PiBackgroundDockShortcut;
 }
 
 interface BackgroundTasksConfigFile {
   readonly tasksDir?: string;
-  readonly dockShortcut?: PiBackgroundDockShortcut;
 }
 
 /** Default tasks directory: the PI agent directory plus `tasks`. */
@@ -56,18 +45,10 @@ function readConfigFile(file: string): BackgroundTasksConfigFile | undefined {
     );
   }
   if (!isRecord(parsed)) configError(file, 'must contain a JSON object');
-  const unknown = Object.keys(parsed).filter((key) => key !== 'tasksDir' && key !== 'dockShortcut');
+  const unknown = Object.keys(parsed).filter((key) => key !== 'tasksDir');
   if (unknown.length > 0) configError(file, `contains unknown keys: ${unknown.join(', ')}`);
   if (parsed.tasksDir !== undefined && typeof parsed.tasksDir !== 'string')
     configError(file, 'has a non-string tasksDir');
-  if (
-    parsed.dockShortcut !== undefined &&
-    !(PI_BG_DOCK_SHORTCUT_VALUES as readonly string[]).includes(parsed.dockShortcut as string)
-  )
-    configError(
-      file,
-      `has an invalid dockShortcut; accepted values are exactly ${PI_BG_DOCK_SHORTCUT_VALUES.join(',')}`,
-    );
   return parsed as BackgroundTasksConfigFile;
 }
 
@@ -91,15 +72,12 @@ export function resolveBackgroundTasksConfig(
     { file: join(cwd, CONFIG_DIR_NAME, PI_BG_CONFIG_FILE_NAME), dir: cwd },
   ];
   let tasksDir: string | undefined;
-  let dockShortcut = PI_BG_DEFAULT_DOCK_SHORTCUT;
   for (const { file, dir } of files) {
     const parsed = readConfigFile(file);
     if (parsed === undefined) continue;
     if (parsed.tasksDir !== undefined) tasksDir = resolveTasksDir(parsed.tasksDir, dir);
-    if (parsed.dockShortcut !== undefined) dockShortcut = parsed.dockShortcut;
   }
   return Object.freeze({
     tasksDir: tasksDir ?? defaultTasksDir(agentDir),
-    dockShortcut,
   });
 }

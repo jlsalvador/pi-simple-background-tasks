@@ -570,23 +570,18 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     },
   });
 
-  if (config.dockShortcut === 'shift+down') {
-    pi.registerShortcut('shift+down' satisfies KeyId, {
-      description: 'Open the background task manager',
-      handler: async (ctx) => {
-        await openTaskManager(ctx);
-      },
-    });
-  }
-
-  if (config.dockShortcut === 'ctrl+alt+b') {
-    pi.registerShortcut('ctrl+alt+b' satisfies KeyId, {
-      description: 'Open the background task manager',
-      handler: async (ctx) => {
-        await openTaskManager(ctx);
-      },
-    });
-  }
+  pi.registerShortcut('shift+down' satisfies KeyId, {
+    description: 'Open the background task manager',
+    handler: async (ctx) => {
+      await openTaskManager(ctx);
+    },
+  });
+  pi.registerShortcut('ctrl+alt+b' satisfies KeyId, {
+    description: 'Open the background task manager',
+    handler: async (ctx) => {
+      await openTaskManager(ctx);
+    },
+  });
 
   pi.registerCommand('jobs', {
     description: 'List running and recent background tasks',

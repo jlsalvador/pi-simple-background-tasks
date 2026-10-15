@@ -65,7 +65,7 @@ pi install git:github.com/jlsalvador/pi-simple-background-tasks@main -l
 | `/kill <id>` | Stop a running task. |
 | `/clean [session\|all\|<id>]` | Delete finished tasks: one, this session (default), or all. |
 
-The default **Shift↓** shortcut opens the task manager (configurable).
+**Shift↓** and **Ctrl+Alt+B** both open the task manager.
 
 ## Configuration
 
@@ -79,14 +79,12 @@ Configuration follows the PI extension-config pattern. Create `pi-background-tas
 | Key | Type | Default |
 | --- | --- | --- |
 | `tasksDir` | string path | `~/.pi/agent/tasks` |
-| `dockShortcut` | `"shift+down"` / `"ctrl+alt+b"` / `"off"` | `"shift+down"` |
 
 Example:
 
 ```json
 {
-  "tasksDir": "~/my-tasks",
-  "dockShortcut": "ctrl+alt+b"
+  "tasksDir": "~/my-tasks"
 }
 ```
 
