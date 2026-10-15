@@ -88,8 +88,7 @@ function optionalTrimmed(value: string): string | undefined {
 
 const BgRunParams = Type.Object({
   name: Type.String({
-    description:
-      'Short human-readable task name shown in the bg footer dock. Required; use 2-6 words, not the raw command.',
+    description: 'Short human-readable task name. Required; use 2-6 words, not the raw command.',
   }),
   command: Type.String({ description: 'Shell command to start in the background' }),
   isAgent: Type.Boolean({
@@ -245,8 +244,6 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
   const eventService: BackgroundTaskExtensionService = installBackgroundTaskExtensionApi({
     events: pi.events,
     registry,
-    getContext: () => currentRegistryCtx,
-    isShuttingDown: () => registry.isShuttingDown(),
   });
 
   const beginSessionShutdown = (reason: string): void => {
@@ -537,7 +534,7 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
 
   pi.registerCommand('bg', {
     description:
-      'Start a tracked shell command: /bg [--survive-reload] [--agent] [--name "Task name"] <command>',
+      'Start a tracked shell command: /bg [--survive-reload] [--agent|--script] [--name "Task name"] <command>',
     handler: async (args, ctx) => {
       try {
         const parsed = parseBgCommandArgs(args);
@@ -563,7 +560,7 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
   });
 
   pi.registerCommand('tasks', {
-    description: 'Open the Claude-like background task manager UI',
+    description: 'Open the background task manager UI',
     handler: async (args, ctx) => {
       const taskId = optionalTrimmed(args);
       await openTaskManager(ctx, taskId);
@@ -708,7 +705,7 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     promptGuidelines: [
       'Use bg_run instead of bash for commands expected to run for a long time, such as test suites, dev servers, watchers, or builds.',
       'Always set isAgent: true only when the background task launches an LLM/agent process; set isAgent: false for scripts, tests, dev servers, sleeps, and ordinary shell commands.',
-      'When using bg_run, always set name to a concise 2-6 word human-readable label for the footer task dock; do not use the raw command as the name unless it is already short and meaningful.',
+      'When using bg_run, always set name to a concise 2-6 word human-readable label; do not use the raw command as the name unless it is already short and meaningful.',
       'bg_run returns immediately. With notifyOnCompletion:true and triggerOnCompletion:true (both defaults), completed, failed, or killed terminal state is delivered as <background-task-notification> and automatically starts a follow-up agent turn.',
       'After a default bg_run launch, continue only independent useful work that does not merely wait for the task; otherwise briefly acknowledge it if useful, then end the current turn. Do not call sleep, bg_status, or bg_logs merely to wait; the terminal notification will wake you.',
       'Treat <background-task-notification> as durable terminal truth. Do not call bg_status to reconfirm it; call bg_logs only when the task output is needed.',

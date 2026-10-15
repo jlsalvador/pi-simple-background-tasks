@@ -296,7 +296,7 @@ export type CompletionDeliveryMode =
   | 'notification-only'
   | 'manual-monitoring';
 
-export interface CompletionDeliveryGuidance {
+interface CompletionDeliveryGuidance {
   readonly mode: CompletionDeliveryMode;
   readonly notificationEnabled: boolean;
   readonly automaticWakeEnabled: boolean;
@@ -402,7 +402,7 @@ export function sanitizePathSegment(value: string): string {
   return sanitized || 'session';
 }
 
-export function stripMatchingQuotes(value: string): string {
+function stripMatchingQuotes(value: string): string {
   const trimmed = value.trim();
   if (trimmed.length >= 2) {
     const first = trimmed[0];
@@ -617,25 +617,25 @@ export function formatCompactNumber(count: number): string {
   return `${String(Math.round(normalized / 1000000))}M`;
 }
 
-export function formatContextUsageSummary(usage?: TaskContextUsage): string | undefined {
+function formatContextUsageSummary(usage?: TaskContextUsage): string | undefined {
   if (usage?.contextWindow === undefined || usage.contextWindow <= 0) return undefined;
   const window = formatCompactNumber(usage.contextWindow);
   if (usage.percent === null || usage.tokens === null) return `ctx=?/${window}`;
   return `ctx=${usage.percent.toFixed(1)}%/${window}`;
 }
 
-export function formatTokenUsageSummary(usage?: TaskTokenUsage): string | undefined {
+function formatTokenUsageSummary(usage?: TaskTokenUsage): string | undefined {
   if (!usage || usage.totalTokens <= 0) return undefined;
   return `tokens=${formatCompactNumber(usage.totalTokens)}`;
 }
 
-export function formatToolUsageSummary(usage?: TaskToolUsage): string | undefined {
+function formatToolUsageSummary(usage?: TaskToolUsage): string | undefined {
   if (!usage || (usage.total <= 0 && usage.failed <= 0)) return undefined;
   const failed = usage.failed > 0 ? ` failed=${String(usage.failed)}` : '';
   return `tools=${String(usage.total)}${failed}`;
 }
 
-export function formatModelSummary(model?: string): string | undefined {
+function formatModelSummary(model?: string): string | undefined {
   if (!model) return undefined;
   return `model=${model}`;
 }
@@ -649,7 +649,7 @@ export function formatModelSummary(model?: string): string | undefined {
  * file instead of leaking raw telemetry JSON. Both the parser and the formatter
  * are pure so the visible transcript is fully unit-testable.
  */
-export const AGENT_ACTIVITY_TYPE = 'background-task-activity';
+const AGENT_ACTIVITY_TYPE = 'background-task-activity';
 const AGENT_ACTIVITY_DETAIL_MAX = 80;
 
 export type AgentActivity =
@@ -1028,14 +1028,6 @@ export function shellInvocationForPolicy(
     dialect,
     windowsVerbatimArguments: policy.windowsVerbatimArguments,
   };
-}
-
-export function shellInvocation(
-  command: string,
-  platform: NodeJS.Platform = process.platform,
-  env: NodeJS.ProcessEnv = process.env,
-): ShellInvocation {
-  return shellInvocationForPolicy(command, resolveShellPolicy(platform, env));
 }
 
 export function normalizeMaxBytes(value: unknown, fallback = DEFAULT_LOG_BYTES): number {

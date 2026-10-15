@@ -1,7 +1,6 @@
 import type {
   BeforeAgentStartEvent,
   BeforeAgentStartEventResult,
-  ExtensionAPI,
 } from '@earendil-works/pi-coding-agent';
 import {
   type ResolvedShellPolicy,
@@ -167,13 +166,6 @@ export function applyShellPolicyGuidance(
 export function createShellPolicyGuidanceHandler(policy: ResolvedShellPolicy) {
   return (event: BeforeAgentStartEvent): BeforeAgentStartEventResult | undefined =>
     applyShellPolicyGuidance(event, policy);
-}
-
-export function registerShellPolicyGuidance(
-  pi: Pick<ExtensionAPI, 'on'>,
-  policy: ResolvedShellPolicy,
-): void {
-  pi.on('before_agent_start', createShellPolicyGuidanceHandler(policy));
 }
 
 /** Resolve once at extension activation; the returned object is deeply frozen. */

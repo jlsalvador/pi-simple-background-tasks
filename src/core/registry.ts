@@ -207,7 +207,6 @@ export type CompletionNotificationSender = (
 ) => void;
 
 export interface BackgroundTaskRegistryOptions {
-  onChange?: () => void;
   sendCompletionNotification: CompletionNotificationSender;
   publishTerminal?: (task: BgTaskSnapshot) => void;
   spawn?: BackgroundTaskSpawn;
@@ -245,17 +244,14 @@ function defaultTaskId(): string {
   return `b${randomBytes(4).toString('hex')}`;
 }
 
-export function commandMayLaunchPiAgent(
-  command: string,
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
+function commandMayLaunchPiAgent(command: string, env: NodeJS.ProcessEnv = process.env): boolean {
   if (env.PI_BG_DISABLE_PI_TELEMETRY === '1') return false;
   return /(^|[\s;&|()])pi(?=\s)(?=[^\n;&|]*(?:\s-p(?:\s|$)|\s--print(?:\s|$)|\s--mode(?:=|\s+)json\b))/m.test(
     command,
   );
 }
 
-export function buildModelWindowIndex(
+function buildModelWindowIndex(
   ctx: Pick<BackgroundTaskContext, 'modelRegistry' | 'model'>,
 ): ModelWindowIndex {
   const byQualifiedId: Record<string, number> = {};
@@ -291,7 +287,7 @@ export function buildModelWindowIndex(
   };
 }
 
-export function createPiTelemetryWrapperSource(
+function createPiTelemetryWrapperSource(
   index: ModelWindowIndex,
   launch: PiLaunchSpec = resolvePiLaunch(),
 ): string {
@@ -773,7 +769,6 @@ export class BackgroundTaskRegistry {
   private readonly stopWaitMs: number;
   private readonly taskAdmissionTimeoutMs: number;
   private readonly logger: Pick<Console, 'error'>;
-  private readonly onChange: () => void;
   private readonly sendCompletionNotification: CompletionNotificationSender;
   private readonly publishTerminalSnapshot: (task: BgTaskSnapshot) => void;
   private readonly posixProcessGroupKillStates = new WeakMap<BgTask, PosixProcessGroupKillState>();
@@ -818,7 +813,6 @@ export class BackgroundTaskRegistry {
       'taskAdmissionTimeoutMs',
     );
     this.logger = options.logger ?? console;
-    this.onChange = options.onChange ?? noopOnChange;
     this.sendCompletionNotification = options.sendCompletionNotification;
     this.publishTerminalSnapshot = options.publishTerminal ?? noopOnChange;
     this.reloadShellOwner = options.reloadShellOwner;
@@ -1100,7 +1094,6 @@ export class BackgroundTaskRegistry {
       onChanged: (execution) => {
         const lease = boundLease;
         if (!this.ownsReloadExecution(execution, lease)) return;
-        this.onChange();
       },
       onTerminal: (execution) => {
         const lease = boundLease;
@@ -1485,7 +1478,6 @@ export class BackgroundTaskRegistry {
       }
       this.reloadShellOwner.markAdmissionCommitted(lease, execution);
       committed = true;
-      this.onChange();
       return task;
     } catch (error) {
       const primary = admission.controller.signal.aborted
@@ -1738,7 +1730,6 @@ export class BackgroundTaskRegistry {
         admission,
       );
       this.assertTaskAdmissionOpen('a background task', admission);
-      this.onChange();
       return task;
     } catch (error) {
       if (admission.controller.signal.aborted) {
@@ -1962,7 +1953,6 @@ export class BackgroundTaskRegistry {
       model: task.model,
     });
     if (before !== after) {
-      this.onChange();
       void this.writeMetadata(task).catch((error: unknown) => {
         this.logger.error(
           `[background-tasks] failed to write telemetry metadata for ${task.id}:`,
@@ -2205,7 +2195,6 @@ export class BackgroundTaskRegistry {
     this.finishPosixProcessGroupKill(task, state, false);
     task.error = BackgroundTaskRegistry.appendTaskError(task.error, error.message);
     this.writeNotice(task, `\n[background task POSIX termination: ${error.message}]\n`);
-    this.onChange();
     void this.writeMetadata(task).catch((metadataError: unknown) => {
       this.logger.error(
         `[background-tasks] failed to write POSIX process-group failure metadata for ${task.id}:`,
@@ -2426,7 +2415,6 @@ export class BackgroundTaskRegistry {
       `${detail}; force escalation remains scheduled`;
     task.error = BackgroundTaskRegistry.appendTaskError(task.error, message);
     this.recordWindowsTaskkillNotice(task, message);
-    this.onChange();
     void this.writeMetadata(task).catch((metadataError: unknown) => {
       this.logger.error(
         `[background-tasks] failed to write Windows taskkill soft-failure metadata for ${task.id}:`,
@@ -2446,7 +2434,6 @@ export class BackgroundTaskRegistry {
     state.forceFailure = error;
     task.error = BackgroundTaskRegistry.appendTaskError(task.error, error.message);
     this.recordWindowsTaskkillNotice(task, error.message);
-    this.onChange();
     void this.writeMetadata(task).catch((metadataError: unknown) => {
       this.logger.error(
         `[background-tasks] failed to write Windows taskkill force-failure metadata for ${task.id}:`,
@@ -2730,7 +2717,6 @@ export class BackgroundTaskRegistry {
     task.reloadHostDeliveryInFlight = true;
     try {
       if (!this.ownsReloadExecution(execution, lease)) return;
-      this.onChange();
       this.publishTerminal(task);
       const deliveryGate = await this.waitForTerminalPublicationGate(task);
       if (!this.ownsReloadExecution(execution, lease)) return;
@@ -3152,7 +3138,6 @@ export class BackgroundTaskRegistry {
     }
 
     for (const waiter of task.waiters.splice(0)) waiter();
-    this.onChange();
     this.publishTerminal(task);
     const deliveryGate = await this.waitForTerminalPublicationGate(task);
     if (deliveryGate.kind === 'rejected') {
