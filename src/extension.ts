@@ -46,6 +46,7 @@ import {
   makeReloadShellIdentity,
 } from './core/reload-shell-owner.js';
 import { createShellPolicyGuidanceHandler, initializeShellPolicy } from './core/shell-policy.js';
+import type { CleanupScope, CleanupSummary } from './core/task-cleanup.js';
 import type { BackgroundTaskForUi, TaskManagerResult } from './ui/background-tasks-manager.js';
 
 /**
@@ -148,6 +149,21 @@ const BgKillParams = Type.Object({
   taskId: Type.String({ description: 'Task ID or unambiguous prefix to stop' }),
 });
 
+const BgCleanParams = Type.Object({
+  taskId: Type.Optional(
+    Type.String({
+      description:
+        'Delete this single task (by ID or unambiguous prefix). When set, scope is ignored.',
+    }),
+  ),
+  scope: Type.Optional(
+    Type.Union([Type.Literal('session'), Type.Literal('all')], {
+      description:
+        "Which finished tasks to delete when taskId is omitted: 'session' (this session, default) or 'all' (the entire tasks folder).",
+    }),
+  ),
+});
+
 type BgRunParamsValue = Static<typeof BgRunParams>;
 
 function renderPlainResult(result: TextToolResult, options: ToolRenderResultOptions, theme: Theme) {
@@ -156,6 +172,37 @@ function renderPlainResult(result: TextToolResult, options: ToolRenderResultOpti
   const text =
     result.content?.map((part) => (part.type === 'text' ? (part.text ?? '') : '')).join('\n') ?? '';
   return new Text(text, 0, 0);
+}
+
+interface BgCleanDetails {
+  scope: CleanupScope;
+  deleted: { id: string; status: string }[];
+  skipped: { id: string; status: string }[];
+  notFound: string[];
+}
+
+function formatCleanMessage(summary: CleanupSummary): string {
+  const scopeLabel =
+    summary.scope === 'one'
+      ? 'the specified task'
+      : summary.scope === 'session'
+        ? 'this session'
+        : 'the entire tasks folder';
+  const plural = (n: number): string => (n === 1 ? '' : 's');
+  const parts = [
+    `Cleaned ${summary.deleted.length} finished task${plural(summary.deleted.length)} in ${scopeLabel}.`,
+  ];
+  if (summary.skipped.length > 0) {
+    parts.push(
+      `Skipped ${summary.skipped.length} running task${plural(summary.skipped.length)}: ${summary.skipped
+        .map((s) => s.id)
+        .join(', ')}.`,
+    );
+  }
+  if (summary.notFound.length > 0) {
+    parts.push(`Not found: ${summary.notFound.join(', ')}.`);
+  }
+  return parts.join(' ');
 }
 
 export default async function backgroundTasksExtension(pi: ExtensionAPI): Promise<void> {
@@ -610,6 +657,50 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     },
   });
 
+  pi.registerCommand('clean', {
+    description: 'Delete finished background tasks: /clean [session|all|<id>]',
+    getArgumentCompletions: (prefix) => {
+      const p = prefix.trim();
+      const scopes = ['session', 'all'].filter((s) => s.startsWith(p));
+      const ids = registry
+        .allTasks()
+        .filter((task) => task.status !== 'running' && task.id.startsWith(p))
+        .slice(0, 20)
+        .map((task) => ({
+          value: task.id,
+          label: `${task.id} ${taskDisplayName(task)}`,
+          description: `${task.status} — ${truncateChars(task.command, 60)}`,
+        }));
+      const matches = [
+        ...scopes.map((s) => ({ value: s, label: s, description: 'scope' })),
+        ...ids,
+      ];
+      return matches.length > 0 ? matches : null;
+    },
+    handler: async (args, ctx) => {
+      const arg = (args ?? '').trim();
+      let scope: CleanupScope;
+      let taskId: string | undefined;
+      if (arg === 'all') {
+        scope = 'all';
+      } else if (arg === 'session' || arg === '') {
+        scope = 'session';
+      } else {
+        scope = 'one';
+        taskId = arg;
+      }
+      try {
+        const summary = await registry.cleanupFinishedTasks(scope, taskId);
+        ctx.ui.notify(formatCleanMessage(summary), 'info');
+      } catch (error) {
+        ctx.ui.notify(
+          `Background clean error: ${error instanceof Error ? error.message : String(error)}`,
+          'error',
+        );
+      }
+    },
+  });
+
   pi.registerTool<typeof BgRunParams, BgRunDetails>({
     name: 'bg_run',
     label: 'Background Run',
@@ -824,6 +915,57 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
         0,
         0,
       );
+    },
+  });
+
+  pi.registerTool<typeof BgCleanParams, BgCleanDetails>({
+    name: 'bg_clean',
+    label: 'Background Clean',
+    description:
+      'Delete finished background tasks to free their disk space. Only terminal tasks (completed/failed/killed) are removed; running tasks are left alone and reported. Scope: a single task by ID, all of this session (default), or the entire tasks folder.',
+    promptSnippet: 'Delete finished background tasks',
+    promptGuidelines: [
+      'Use bg_clean when the user asks to clean up, remove, or free space from finished background tasks.',
+      'bg_clean never deletes a running task; it reports any running tasks it skipped.',
+      'By default it cleans this session; pass scope:"all" to clean the entire tasks folder.',
+    ],
+    parameters: BgCleanParams,
+    async execute(_toolCallId, params) {
+      const scope: CleanupScope = params.taskId ? 'one' : (params.scope ?? 'session');
+      const summary = await registry.cleanupFinishedTasks(scope, params.taskId);
+      return {
+        content: textContent(formatCleanMessage(summary)),
+        details: {
+          scope,
+          deleted: summary.deleted,
+          skipped: summary.skipped,
+          notFound: summary.notFound,
+        },
+      };
+    },
+    renderCall(args, theme) {
+      const target = args.taskId ?? args.scope ?? 'session';
+      return new Text(
+        `${theme.fg('toolTitle', theme.bold('bg_clean'))} ${theme.fg('accent', target)}`,
+        0,
+        0,
+      );
+    },
+    renderResult(result, { expanded }, theme) {
+      const d = result.details;
+      let text = `${theme.fg('muted', `scope=${d.scope}`)} ${theme.fg('accent', `${d.deleted.length} deleted`)}`;
+      if (d.skipped.length > 0)
+        text += ` ${theme.fg('warning', `${d.skipped.length} skipped (running)`)}`;
+      if (d.notFound.length > 0)
+        text += ` ${theme.fg('warning', `${d.notFound.length} not found`)}`;
+      if (expanded) {
+        for (const item of d.deleted)
+          text += `\n  ✓ ${theme.fg('accent', item.id)} ${theme.fg('dim', item.status)}`;
+        for (const item of d.skipped)
+          text += `\n  ▶ ${theme.fg('accent', item.id)} ${theme.fg('dim', 'running, kept')}`;
+        for (const n of d.notFound) text += `\n  ${theme.fg('warning', n)}`;
+      }
+      return new Text(text, 0, 0);
     },
   });
 }

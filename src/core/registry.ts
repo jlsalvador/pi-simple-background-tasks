@@ -50,6 +50,11 @@ import {
   createReloadableShellExecutionV1,
   RELOAD_SHELL_OWNER_PROTOCOL,
 } from './reload-shell-owner.js';
+import {
+  type CleanupScope,
+  type CleanupSummary,
+  cleanupFinishedTasks as cleanupTasksOnDisk,
+} from './task-cleanup.js';
 import { closeAndFsyncOutputStream, writeJsonAtomic } from './task-durable.js';
 import {
   runWindowsTaskkill,
@@ -1004,6 +1009,22 @@ export class BackgroundTaskRegistry {
 
   snapshot(task: BgTask): BgTaskSnapshot {
     return snapshot(task);
+  }
+
+  // Delete the on-disk files of finished tasks in the given scope. Running
+  // tasks are left untouched and reported. Current-run tasks are also dropped
+  // from the in-memory registry so /jobs stays consistent.
+  async cleanupFinishedTasks(scope: CleanupScope, taskId?: string): Promise<CleanupSummary> {
+    const summary = await cleanupTasksOnDisk({
+      tasksDir: this.tasksDir,
+      sessionRunDir: this.runtimeDir?.abs,
+      scope,
+      taskId,
+    });
+    for (const deleted of summary.deleted) {
+      this.tasks.delete(deleted.id);
+    }
+    return summary;
   }
 
   hasCurrentReloadLease(): boolean {

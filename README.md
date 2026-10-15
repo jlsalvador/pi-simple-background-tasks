@@ -52,6 +52,7 @@ pi install git:github.com/jlsalvador/pi-simple-background-tasks@main -l
 | `bg_status` | Inspect one task, or list running and recent tasks. |
 | `bg_logs` | Read bounded output from a task. |
 | `bg_kill` | Stop a running task. |
+| `bg_clean` | Delete finished tasks to free disk space. Only terminal tasks are removed; running tasks are reported and left alone. Scope: one task by ID, this session (default), or the whole folder. |
 
 ## Commands
 
@@ -62,6 +63,7 @@ pi install git:github.com/jlsalvador/pi-simple-background-tasks@main -l
 | `/tasks [id]` | Open the task manager overlay. |
 | `/logs <id> [maxBytes]` | Show bounded output from a task. |
 | `/kill <id>` | Stop a running task. |
+| `/clean [session\|all\|<id>]` | Delete finished tasks: one, this session (default), or all. |
 
 The default **Shift↓** shortcut opens the task manager (configurable).
 
