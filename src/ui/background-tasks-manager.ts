@@ -135,6 +135,7 @@ export class BackgroundTasksManager implements Component {
   private detailLines: string[] = [];
   private detailFollow = true;
   private detailScrollTop = 0;
+  private outputRows = DETAIL_VISIBLE_OUTPUT_LINES;
   private tailBytesRead = 0;
   private tailTotalBytes = 0;
   private tailTruncated = false;
@@ -296,11 +297,11 @@ export class BackgroundTasksManager implements Component {
       return;
     }
     if (matchesKey(data, 'pageUp')) {
-      this.scrollDetail(-DETAIL_VISIBLE_OUTPUT_LINES);
+      this.scrollDetail(-this.outputRows);
       return;
     }
     if (matchesKey(data, 'pageDown')) {
-      this.scrollDetail(DETAIL_VISIBLE_OUTPUT_LINES);
+      this.scrollDetail(this.outputRows);
       return;
     }
     if (data === 'r') {
@@ -455,7 +456,7 @@ export class BackgroundTasksManager implements Component {
 
   /** Scroll the detail output window. Scrolling up pauses the live tail; reaching the bottom resumes it. */
   private scrollDetail(delta: number): void {
-    const maxTop = Math.max(0, this.detailLines.length - DETAIL_VISIBLE_OUTPUT_LINES);
+    const maxTop = Math.max(0, this.detailLines.length - this.outputRows);
     if (maxTop === 0) return;
     if (this.detailFollow) {
       this.detailFollow = false;
@@ -512,23 +513,16 @@ export class BackgroundTasksManager implements Component {
     return '';
   }
 
-  private frame(
-    title: string,
-    subtitle: string,
-    body: string[],
-    footer: string,
-    width: number,
-  ): string[] {
+  private frame(subtitle: string, body: string[], footer: string, width: number): string[] {
     const inner = Math.max(1, width - 2);
     const top = blueBorder(`╭${'─'.repeat(inner)}╮`);
     const bottom = blueBorder(`╰${'─'.repeat(inner)}╯`);
     const row = (content = '') =>
       `${blueBorder('│')}${padAnsi(truncateToWidth(content, inner), inner)}${blueBorder('│')}`;
-    const header = lightBlue(padAnsi(` ${title}`, inner));
     const subtitleLine = subtitle
       ? lightBlue(padAnsi(` ${subtitle}`, inner))
       : lightBlue(' '.repeat(inner));
-    const lines = [top, row(header), row(subtitleLine), row()];
+    const lines = [top, row(subtitleLine), row()];
     for (const line of body) lines.push(row(line));
     lines.push(row());
     const footerWidth = Math.max(1, inner - 1);
@@ -633,7 +627,6 @@ export class BackgroundTasksManager implements Component {
     }
     if (this.actionMessage) body.push(this.theme.fg('warning', `  ${this.actionMessage}`));
     return this.frame(
-      'bg tasks focused',
       subtitle,
       body,
       this.theme.fg('dim', this.listHelp(tasks[this.selectedIndex], allRunning, historyCount)),
@@ -668,11 +661,37 @@ export class BackgroundTasksManager implements Component {
     );
     if (task.error) body.push(` ${this.theme.fg('error', `Error: ${task.error}`)}`);
     body.push('', ` ${this.theme.fg('toolTitle', 'Output tail:')}`);
+    this.outputRows = this.computeOutputRows(
+      wrapTextWithAnsi(this.detailHelp(task), Math.max(1, width - 3)).length,
+      !!task.description && compactWhitespace(task.description) !== compactWhitespace(name),
+      !!task.error,
+      !!this.actionMessage,
+    );
     body.push(...this.renderOutputBox(width - 4));
     if (this.actionMessage) body.push(this.theme.fg('warning', ` ${this.actionMessage}`));
     const subtitle = `${task.id} · ${task.status === 'running' ? 'live tail refreshes every second' : 'final output'}`;
     const footer = this.theme.fg('dim', this.detailHelp(task));
-    return this.frame(`bg: ${truncateChars(name, 64)}`, subtitle, body, footer, width);
+    return this.frame(subtitle, body, footer, width);
+  }
+
+  /** Output-box rows that fit the terminal, so the whole detail stays visible in short panes. */
+  private computeOutputRows(
+    footerLines: number,
+    hasDescription: boolean,
+    hasError: boolean,
+    hasAction: boolean,
+  ): number {
+    // Fixed detail lines excluding the output-box content rows: frame chrome
+    // (top, subtitle, two blanks, footer, bottom) + six fields + command +
+    // "Output tail:" + the output box's own top/bottom/status rows.
+    const fixed =
+      17 + footerLines + (hasDescription ? 1 : 0) + (hasError ? 1 : 0) + (hasAction ? 1 : 0);
+    const available = this.terminalRows() - 2;
+    return Math.max(1, Math.min(DETAIL_VISIBLE_OUTPUT_LINES, available - fixed));
+  }
+
+  private terminalRows(): number {
+    return process.stdout.rows || Number(process.env.LINES) || 24;
   }
 
   private renderOutputBox(width: number): string[] {
@@ -687,12 +706,12 @@ export class BackgroundTasksManager implements Component {
     } else if (this.detailLines.length === 0) {
       lines.push(row(this.theme.fg('dim', 'No output yet')));
     } else {
-      const maxTop = Math.max(0, this.detailLines.length - DETAIL_VISIBLE_OUTPUT_LINES);
+      const maxTop = Math.max(0, this.detailLines.length - this.outputRows);
       const start = this.detailFollow ? maxTop : Math.min(this.detailScrollTop, maxTop);
-      const windowLines = this.detailLines.slice(start, start + DETAIL_VISIBLE_OUTPUT_LINES);
+      const windowLines = this.detailLines.slice(start, start + this.outputRows);
       for (const line of windowLines) lines.push(row(this.theme.fg('toolOutput', line)));
     }
-    while (lines.length < DETAIL_VISIBLE_OUTPUT_LINES + 1) lines.push(row());
+    while (lines.length < this.outputRows + 1) lines.push(row());
     lines.push(bottom);
     lines.push(` ${this.theme.fg('dim', this.outputStatusLine())}`);
     return lines;
@@ -701,9 +720,9 @@ export class BackgroundTasksManager implements Component {
   private outputStatusLine(): string {
     const total = this.detailLines.length;
     if (!this.detailFollow && total > 0) {
-      const maxTop = Math.max(0, total - DETAIL_VISIBLE_OUTPUT_LINES);
+      const maxTop = Math.max(0, total - this.outputRows);
       const start = Math.min(this.detailScrollTop, maxTop);
-      const end = Math.min(total, start + DETAIL_VISIBLE_OUTPUT_LINES);
+      const end = Math.min(total, start + this.outputRows);
       return `lines ${formatCount(start + 1)}\u2013${formatCount(end)} of ${formatCount(total)} · ↑/↓ PgUp/PgDn scroll · ↓ at bottom follows`;
     }
     const suffix = this.tailTruncated ? ` of ${formatSize(this.tailTotalBytes)}` : '';
