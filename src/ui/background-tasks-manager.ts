@@ -543,17 +543,14 @@ export class BackgroundTasksManager implements Component {
     return task.status === 'running' ? 'k stop' : 'd delete';
   }
 
-  private listHelp(selected: BgTask | undefined): string {
-    const parts = [
-      '↑/↓ select',
-      'Enter logs',
-      this.taskActionLabel(selected),
-      'a stop all',
-      `h ${this.showHistory ? 'hide' : 'show'} history`,
-      'R rerun',
-      'c path',
-      'x close',
-    ];
+  private listHelp(selected: BgTask | undefined, allRunning: number, historyCount: number): string {
+    const hasSelection = selected !== undefined;
+    const parts: string[] = [];
+    if (hasSelection) parts.push('↑/↓ select', 'Enter logs', this.taskActionLabel(selected));
+    if (allRunning > 0) parts.push('a stop all');
+    if (historyCount > 0) parts.push(`h ${this.showHistory ? 'hide' : 'show'} history`);
+    if (hasSelection) parts.push('R rerun', 'c path');
+    parts.push('x close');
     return parts.filter((part) => part.length > 0).join(' · ');
   }
 
@@ -639,7 +636,7 @@ export class BackgroundTasksManager implements Component {
       'bg tasks focused',
       subtitle,
       body,
-      this.theme.fg('dim', this.listHelp(tasks[this.selectedIndex])),
+      this.theme.fg('dim', this.listHelp(tasks[this.selectedIndex], allRunning, historyCount)),
       width,
     );
   }
