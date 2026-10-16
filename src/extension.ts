@@ -213,10 +213,7 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
   let reloadHandoffFailed = false;
   let shutdownReason = 'shutdown';
   const activationCloseFence = new SynchronousActivationCloseFence();
-  const taskManagerLoader = new LazyModule(
-    'background-task-manager',
-    () => import('./ui/background-tasks-manager.js'),
-  );
+  const taskManagerLoader = new LazyModule(() => import('./ui/background-tasks-manager.js'));
 
   const registryContext = (ctx: ExtensionContext): BackgroundTaskContext => ({
     cwd: ctx.cwd,
@@ -287,7 +284,7 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     beginSessionShutdown(shutdownReason);
   });
   activationCloseFence.add(() => {
-    taskManagerLoader.close('session shutdown');
+    taskManagerLoader.close();
   });
   pi.on('session_shutdown', (event) => {
     shutdownReason = event.reason;
