@@ -58,7 +58,7 @@ pi install git:github.com/jlsalvador/pi-simple-background-tasks@main -l
 
 | Command | Purpose |
 | --- | --- |
-| `/bg [--survive-reload] [--agent] [--name "name"] <command>` | Start a tracked shell command. |
+| `/bg [--survive-reload] [--name "name"] <command>` | Start a tracked shell command. |
 | `/jobs` | List running and recent tasks. |
 | `/tasks [id]` | Open the task manager overlay. |
 | `/logs <id> [maxBytes]` | Show bounded output from a task. |
