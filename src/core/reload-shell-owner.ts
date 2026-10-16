@@ -5,8 +5,6 @@ import { isAbsolute } from 'node:path';
 import { formatSize } from '@earendil-works/pi-coding-agent';
 import {
   type BgTask,
-  isJsonObject,
-  parseJsonText,
   type ReloadableShellExecutionV1,
   type ReloadShellActivationClaimV1,
   type ReloadShellActivationLeaseV1,
@@ -20,10 +18,7 @@ import {
   type ReloadSurvivalErrorCode,
   type ReloadSurvivalSnapshotV1,
   snapshot,
-  type TaskContextUsage,
   type TaskStatus,
-  type TaskTokenUsage,
-  type TaskToolUsage,
 } from './common.js';
 import { replaceFileDurable } from './durable-fs.js';
 import {
@@ -36,8 +31,6 @@ import {
 export const RELOAD_SHELL_OWNER_PROTOCOL = 'pi-background-tasks.reload-shell-owner.v1' as const;
 export const RELOAD_SHELL_OWNER_SYMBOL = Symbol.for(RELOAD_SHELL_OWNER_PROTOCOL);
 export const RELOAD_SHELL_HANDOFF_TIMEOUT_MS = 30_000;
-
-const TELEMETRY_BUFFER_CHARS = 512 * 1024;
 
 export { ReloadSurvivalError } from './common.js';
 
@@ -705,123 +698,6 @@ export function inspectReloadShellOwnerForTests(
   };
 }
 
-interface ContextUsagePayload {
-  readonly contextWindow?: unknown;
-  readonly tokens?: unknown;
-  readonly percent?: unknown;
-}
-
-interface TokenUsagePayload {
-  readonly input?: unknown;
-  readonly output?: unknown;
-  readonly cacheRead?: unknown;
-  readonly cacheWrite?: unknown;
-  readonly totalTokens?: unknown;
-  readonly costTotal?: unknown;
-}
-
-interface ToolUsagePayload {
-  readonly byName?: unknown;
-  readonly failed?: unknown;
-  readonly total?: unknown;
-}
-
-function nonNegativeInteger(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
-}
-
-function normalizeContextUsage(value: unknown): TaskContextUsage | undefined {
-  if (!isJsonObject(value)) return undefined;
-  const input: ContextUsagePayload = value;
-  const contextWindow =
-    typeof input.contextWindow === 'number' &&
-    Number.isFinite(input.contextWindow) &&
-    input.contextWindow > 0
-      ? Math.floor(input.contextWindow)
-      : undefined;
-  if (contextWindow === undefined) return undefined;
-  const tokens =
-    input.tokens === null
-      ? null
-      : typeof input.tokens === 'number' && Number.isFinite(input.tokens) && input.tokens >= 0
-        ? Math.floor(input.tokens)
-        : null;
-  const percent =
-    input.percent === null
-      ? null
-      : typeof input.percent === 'number' && Number.isFinite(input.percent) && input.percent >= 0
-        ? input.percent
-        : tokens === null
-          ? null
-          : (tokens / contextWindow) * 100;
-  return { tokens, contextWindow, percent };
-}
-
-function normalizeTokenUsage(value: unknown): TaskTokenUsage | undefined {
-  if (!isJsonObject(value)) return undefined;
-  const input: TokenUsagePayload = value;
-  const usage: TaskTokenUsage = {
-    input: nonNegativeInteger(input.input),
-    output: nonNegativeInteger(input.output),
-    cacheRead: nonNegativeInteger(input.cacheRead),
-    cacheWrite: nonNegativeInteger(input.cacheWrite),
-    totalTokens: nonNegativeInteger(input.totalTokens),
-  };
-  if (usage.totalTokens <= 0) {
-    usage.totalTokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
-  }
-  if (
-    typeof input.costTotal === 'number' &&
-    Number.isFinite(input.costTotal) &&
-    input.costTotal >= 0
-  ) {
-    usage.costTotal = input.costTotal;
-  }
-  return usage.totalTokens > 0 ? usage : undefined;
-}
-
-function normalizeToolUsage(value: unknown): TaskToolUsage | undefined {
-  if (!isJsonObject(value)) return undefined;
-  const input: ToolUsagePayload = value;
-  const byName: Record<string, number> = {};
-  if (isJsonObject(input.byName)) {
-    for (const [name, count] of Object.entries(input.byName)) {
-      const normalized = nonNegativeInteger(count);
-      if (normalized > 0) byName[name] = normalized;
-    }
-  }
-  const failed = nonNegativeInteger(input.failed);
-  const total = Math.max(
-    nonNegativeInteger(input.total),
-    failed,
-    Object.values(byName).reduce((sum, count) => sum + count, 0),
-  );
-  return total > 0 || failed > 0 ? { total, failed, byName } : undefined;
-}
-
-function normalizeModel(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  if (trimmed.length === 0) return undefined;
-  return trimmed.length <= 120 ? trimmed : trimmed.slice(0, 120);
-}
-
-function parseContextUsageXml(xml: string): TaskContextUsage | undefined {
-  const number = (tag: string): number | null | undefined => {
-    const match = new RegExp(`<${tag}>(.*?)</${tag}>`, 'iu').exec(xml);
-    if (match === null) return undefined;
-    const raw = match[1]?.trim();
-    if (raw === 'null' || raw === '?') return null;
-    const parsed = Number(raw);
-    return Number.isFinite(parsed) ? parsed : undefined;
-  };
-  return normalizeContextUsage({
-    tokens: number('tokens'),
-    contextWindow: number('context-window') ?? number('contextWindow'),
-    percent: number('percent'),
-  });
-}
-
 interface PosixTreeState {
   readonly groupId: number;
   readonly deadlineAt: number;
@@ -1068,72 +944,6 @@ export function createReloadableShellExecutionV1(
     void execution.requestStop('output_cap', task.error).catch((error: unknown) => {
       task.error = appendError(task.error, `kill failed: ${boundedError(error)}`);
     });
-  };
-
-  const ingestTelemetry = (text: string): void => {
-    if (text.length === 0) return;
-    const telemetryText = `${task.contextUsageBuffer ?? ''}${text}`;
-    let context = task.contextUsage;
-    let tokens = task.tokenUsage;
-    let tools = task.toolUsage;
-    let model = task.model;
-    for (const line of telemetryText.split(/\r?\n/u)) {
-      if (!line.includes('background-task-')) continue;
-      const trimmed = line.trim();
-      if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-        try {
-          const parsed = parseJsonText(trimmed);
-          if (!isJsonObject(parsed)) continue;
-          if (parsed.type === 'background-task-context-usage') {
-            context = normalizeContextUsage(parsed) ?? context;
-          } else if (parsed.type === 'background-task-telemetry') {
-            context = normalizeContextUsage(parsed.contextUsage) ?? context;
-            tokens = normalizeTokenUsage(parsed.tokenUsage) ?? tokens;
-            tools = normalizeToolUsage(parsed.toolUsage) ?? tools;
-            model = normalizeModel(parsed.model) ?? model;
-          }
-        } catch {
-          // Optional telemetry never replaces raw output truth.
-        }
-      }
-    }
-    for (const match of telemetryText.matchAll(
-      /<background-task-context-usage>[\s\S]*?<\/background-task-context-usage>/giu,
-    )) {
-      context = parseContextUsageXml(match[0]) ?? context;
-    }
-    const lastNewline = Math.max(telemetryText.lastIndexOf('\n'), telemetryText.lastIndexOf('\r'));
-    let retained = lastNewline >= 0 ? telemetryText.slice(lastNewline + 1) : telemetryText;
-    const lower = telemetryText.toLowerCase();
-    const open = lower.lastIndexOf('<background-task-context-usage');
-    const close = lower.lastIndexOf('</background-task-context-usage>');
-    if (open > close) retained = telemetryText.slice(open);
-    task.contextUsageBuffer = retained.slice(-TELEMETRY_BUFFER_CHARS);
-    const before = JSON.stringify({
-      contextUsage: task.contextUsage,
-      tokenUsage: task.tokenUsage,
-      toolUsage: task.toolUsage,
-      model: task.model,
-    });
-    task.contextUsage = context;
-    task.tokenUsage = tokens;
-    task.toolUsage = tools;
-    task.model = model;
-    const after = JSON.stringify({
-      contextUsage: context,
-      tokenUsage: tokens,
-      toolUsage: tools,
-      model,
-    });
-    if (before !== after) {
-      changed();
-      void writeMetadata().catch((error: unknown) => {
-        logger.error(
-          `[background-tasks] failed to write survivor telemetry for ${task.id}:`,
-          error,
-        );
-      });
-    }
   };
 
   const finishPosix = (state: PosixTreeState, failure?: Error): void => {
@@ -1658,12 +1468,10 @@ export function createReloadableShellExecutionV1(
   };
   stdoutListener = (data) => {
     const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
-    ingestTelemetry(buffer.toString('utf8'));
     writeBuffer(buffer);
   };
   stderrListener = (data) => {
     const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
-    ingestTelemetry(buffer.toString('utf8'));
     writeBuffer(buffer);
   };
   childErrorListener = (error) => {

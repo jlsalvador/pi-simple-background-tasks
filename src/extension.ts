@@ -74,7 +74,6 @@ interface BgToolArgumentRecord {
   readonly command?: unknown;
   readonly name?: unknown;
   readonly description?: unknown;
-  readonly isAgent?: unknown;
   readonly timeoutSeconds?: unknown;
   readonly notifyOnCompletion?: unknown;
   readonly triggerOnCompletion?: unknown;
@@ -91,10 +90,6 @@ const BgRunParams = Type.Object({
     description: 'Short human-readable task name. Required; use 2-6 words, not the raw command.',
   }),
   command: Type.String({ description: 'Shell command to start in the background' }),
-  isAgent: Type.Boolean({
-    description:
-      'Required. Set true only when this background task launches an LLM/agent process, such as a child `pi -p ...` or `pi --mode json ...`, so Pi-agent telemetry can be collected. Set false for scripts, tests, servers, sleeps, and ordinary shell commands.',
-  }),
   description: Type.Optional(
     Type.String({ description: 'Optional longer human-readable context for the task' }),
   ),
@@ -226,8 +221,6 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
   const registryContext = (ctx: ExtensionContext): BackgroundTaskContext => ({
     cwd: ctx.cwd,
     sessionId: ctx.sessionManager.getSessionId(),
-    modelRegistry: ctx.modelRegistry,
-    model: ctx.model,
   });
 
   const registry = new BackgroundTaskRegistry({
@@ -406,7 +399,6 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
           rerunTask: async (task: BackgroundTaskForUi) => {
             const rerunOptions: StartTaskOptions = {
               name: taskDisplayName(task),
-              isAgent: task.isAgent,
               surviveReload: task.surviveReload,
               notifyOnCompletion: true,
               triggerOnCompletion: false,
@@ -534,12 +526,11 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
 
   pi.registerCommand('bg', {
     description:
-      'Start a tracked shell command: /bg [--survive-reload] [--agent|--script] [--name "Task name"] <command>',
+      'Start a tracked shell command: /bg [--survive-reload] [--name "Task name"] <command>',
     handler: async (args, ctx) => {
       try {
         const parsed = parseBgCommandArgs(args);
         const taskOptions: StartTaskOptions = {
-          isAgent: parsed.isAgent,
           surviveReload: parsed.surviveReload,
           notifyOnCompletion: true,
           triggerOnCompletion: false,
@@ -704,7 +695,6 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
       'Start a named long-running shell command; default terminal notification wakes a follow-up turn, so yield instead of polling',
     promptGuidelines: [
       'Use bg_run instead of bash for commands expected to run for a long time, such as test suites, dev servers, watchers, or builds.',
-      'Always set isAgent: true only when the background task launches an LLM/agent process; set isAgent: false for scripts, tests, dev servers, sleeps, and ordinary shell commands.',
       'When using bg_run, always set name to a concise 2-6 word human-readable label; do not use the raw command as the name unless it is already short and meaningful.',
       'bg_run returns immediately. With notifyOnCompletion:true and triggerOnCompletion:true (both defaults), completed, failed, or killed terminal state is delivered as <background-task-notification> and automatically starts a follow-up agent turn.',
       'After a default bg_run launch, continue only independent useful work that does not merely wait for the task; otherwise briefly acknowledge it if useful, then end the current turn. Do not call sleep, bg_status, or bg_logs merely to wait; the terminal notification will wake you.',
@@ -717,21 +707,10 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
       if (!args || typeof args !== 'object') throw new Error('bg_run arguments must be an object');
       const input = args as BgToolArgumentRecord;
       if (typeof input.command !== 'string') throw new Error('bg_run requires command string');
-      if (typeof input.isAgent !== 'boolean') {
-        throw new Error(
-          'bg_run requires isAgent boolean. Set true only for LLM/agent tasks; set false for scripts, tests, servers, sleeps, and ordinary shell commands.',
-        );
-      }
       if (Object.hasOwn(input, 'surviveReload') && typeof input.surviveReload !== 'boolean') {
         throw new ReloadSurvivalError(
           'pi_bg_survive_reload_invalid',
           'bg_run surviveReload must be boolean when present',
-        );
-      }
-      if (input.surviveReload === true && input.isAgent) {
-        throw new ReloadSurvivalError(
-          'pi_bg_survive_reload_requires_non_agent',
-          'bg_run surviveReload requires isAgent:false',
         );
       }
       const prepared: BgRunParamsValue = {
@@ -740,7 +719,6 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
           normalizeTaskName(input.name) ??
           normalizeTaskName(input.description) ??
           deriveTaskNameFromCommand(input.command),
-        isAgent: input.isAgent,
       };
       if (typeof input.description === 'string') prepared.description = input.description;
       if (typeof input.timeoutSeconds === 'number') prepared.timeoutSeconds = input.timeoutSeconds;
@@ -752,20 +730,8 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
       return prepared;
     },
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      if (typeof params.isAgent !== 'boolean') {
-        throw new Error(
-          'bg_run requires isAgent boolean. Set true only for LLM/agent tasks; set false for scripts, tests, servers, sleeps, and ordinary shell commands.',
-        );
-      }
-      if (params.surviveReload === true && params.isAgent) {
-        throw new ReloadSurvivalError(
-          'pi_bg_survive_reload_requires_non_agent',
-          'bg_run surviveReload requires isAgent:false',
-        );
-      }
       const taskOptions: StartTaskOptions = {
         name: params.name,
-        isAgent: params.isAgent,
         surviveReload: params.surviveReload ?? false,
         notifyOnCompletion: params.notifyOnCompletion ?? true,
         triggerOnCompletion: params.triggerOnCompletion ?? true,

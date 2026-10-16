@@ -1,10 +1,9 @@
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { createWriteStream, existsSync } from 'node:fs';
+// biome-ignore lint/correctness/noUnusedImports: rm is used in task-file cleanup (Promise.allSettled), which biome's import heuristic misses
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { Api, Model } from '@earendil-works/pi-ai';
-import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { formatSize } from '@earendil-works/pi-coding-agent';
 import {
   type BgLogsDetails,
@@ -13,14 +12,9 @@ import {
   boundedRead,
   deriveTaskNameFromCommand,
   escapeXml,
-  formatAgentActivityLine,
   formatDuration,
-  isJsonObject,
-  type JsonObject,
   type KillKind,
   normalizeTaskName,
-  parseAgentActivity,
-  parseJsonText,
   type ReloadableShellExecutionV1,
   type ReloadShellActivationClaimV1,
   type ReloadShellActivationLeaseV1,
@@ -34,18 +28,13 @@ import {
   sanitizePathSegment,
   shellInvocationForPolicy,
   shellPolicySnapshot,
-  shellQuote,
   snapshot,
-  type TaskContextUsage,
   type TaskStatus,
-  type TaskTokenUsage,
-  type TaskToolUsage,
   type TerminalPublicationAbandonReason,
   taskDisplayName,
 } from './common.js';
 import { defaultTasksDir } from './config.js';
 import { BackgroundTaskExtensionServiceClosedError } from './extension-api.js';
-import { type PiLaunchSpec, resolvePiLaunch } from './pi-launch.js';
 import {
   createReloadableShellExecutionV1,
   RELOAD_SHELL_OWNER_PROTOCOL,
@@ -71,7 +60,6 @@ export const TERMINAL_PUBLICATION_MAX_ATTEMPTS = 3;
 export const TERMINAL_PUBLICATION_RETRY_MS = 100;
 export const TASK_ADMISSION_TIMEOUT_MS = 30_000;
 const TERMINAL_PUBLICATION_DIAGNOSTIC_CHARS = 500;
-const TELEMETRY_BUFFER_CHARS = 512 * 1024;
 
 export type TerminalPublicationClosureReason = Extract<
   TerminalPublicationAbandonReason,
@@ -114,22 +102,10 @@ interface TaskAdmission {
   timeoutHandle: NodeJS.Timeout | undefined;
   released: boolean;
 }
-export const WIN32_CMD_PI_TELEMETRY_UNAVAILABLE_REASON =
-  'win32-cmd-cannot-safely-intercept-pi-argv';
-export const NON_POSIX_SHELL_PI_TELEMETRY_UNAVAILABLE_REASON =
-  'user-non-posix-shell-cannot-safely-intercept-pi-argv';
-
-export interface BackgroundTaskModelRegistry
-  extends Pick<ExtensionContext['modelRegistry'], 'getAll'> {
-  find?: (provider: string, modelId: string) => Model<Api> | undefined;
-  isUsingOAuth?: (model: Model<Api>) => boolean;
-}
 
 export interface BackgroundTaskContext {
   cwd: string;
   sessionId?: string;
-  modelRegistry: BackgroundTaskModelRegistry;
-  model?: ExtensionContext['model'] | undefined;
 }
 
 interface OutputEventSource {
@@ -232,510 +208,8 @@ interface RuntimeDir {
   display: string;
 }
 
-interface ModelWindowIndex {
-  byQualifiedId: Record<string, number>;
-  byId: Record<string, number>;
-  defaultModel?: string | undefined;
-  defaultProvider?: string | undefined;
-  defaultContextWindow?: number | undefined;
-}
-
 function defaultTaskId(): string {
   return `b${randomBytes(4).toString('hex')}`;
-}
-
-function commandMayLaunchPiAgent(command: string, env: NodeJS.ProcessEnv = process.env): boolean {
-  if (env.PI_BG_DISABLE_PI_TELEMETRY === '1') return false;
-  return /(^|[\s;&|()])pi(?=\s)(?=[^\n;&|]*(?:\s-p(?:\s|$)|\s--print(?:\s|$)|\s--mode(?:=|\s+)json\b))/m.test(
-    command,
-  );
-}
-
-function buildModelWindowIndex(
-  ctx: Pick<BackgroundTaskContext, 'modelRegistry' | 'model'>,
-): ModelWindowIndex {
-  const byQualifiedId: Record<string, number> = {};
-  const candidatesById = new Map<string, Set<number>>();
-  for (const model of ctx.modelRegistry.getAll()) {
-    const contextWindow =
-      typeof model.contextWindow === 'number' &&
-      Number.isFinite(model.contextWindow) &&
-      model.contextWindow > 0
-        ? Math.floor(model.contextWindow)
-        : undefined;
-    if (!contextWindow) continue;
-    byQualifiedId[`${model.provider}/${model.id}`] = contextWindow;
-    let candidates = candidatesById.get(model.id);
-    if (!candidates) {
-      candidates = new Set<number>();
-      candidatesById.set(model.id, candidates);
-    }
-    candidates.add(contextWindow);
-  }
-  const byId: Record<string, number> = {};
-  for (const [id, windows] of candidatesById) {
-    const onlyWindow = windows.values().next();
-    if (windows.size === 1 && !onlyWindow.done) byId[id] = onlyWindow.value;
-  }
-  const current = ctx.model;
-  return {
-    byQualifiedId,
-    byId,
-    defaultModel: current?.id,
-    defaultProvider: current?.provider,
-    defaultContextWindow: current?.contextWindow,
-  };
-}
-
-function createPiTelemetryWrapperSource(
-  index: ModelWindowIndex,
-  launch: PiLaunchSpec = resolvePiLaunch(),
-): string {
-  return `#!/usr/bin/env node
-const { spawn } = require("node:child_process");
-const index = ${JSON.stringify(index)};
-const launch = ${JSON.stringify(launch)};
-const WINDOWS_COMMAND_LINE_LIMIT = 32767;
-
-const tokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
-let costTotal = 0;
-let hasCostTotal = false;
-let agentModel;
-const toolUsage = { total: 0, failed: 0, byName: {} };
-const seenToolCallIds = new Set();
-const failedToolCallIds = new Set();
-
-function nonNegativeInteger(value) {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
-}
-
-function normalizeUsage(usage) {
-  if (!usage) return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
-  const input = nonNegativeInteger(usage.input);
-  const output = nonNegativeInteger(usage.output);
-  const cacheRead = nonNegativeInteger(usage.cacheRead);
-  const cacheWrite = nonNegativeInteger(usage.cacheWrite);
-  const explicitTotal = nonNegativeInteger(usage.totalTokens);
-  const totalTokens = explicitTotal || (input + output + cacheRead + cacheWrite);
-  const cost = usage.cost && typeof usage.cost.total === "number" && Number.isFinite(usage.cost.total) && usage.cost.total >= 0
-    ? usage.cost.total
-    : undefined;
-  return { input, output, cacheRead, cacheWrite, totalTokens, cost };
-}
-
-function addTokenUsage(usage) {
-  const normalized = normalizeUsage(usage);
-  if (!normalized.totalTokens) return normalized;
-  tokenUsage.input += normalized.input;
-  tokenUsage.output += normalized.output;
-  tokenUsage.cacheRead += normalized.cacheRead;
-  tokenUsage.cacheWrite += normalized.cacheWrite;
-  tokenUsage.totalTokens += normalized.totalTokens;
-  if (normalized.cost !== undefined) {
-    costTotal += normalized.cost;
-    hasCostTotal = true;
-  }
-  return normalized;
-}
-
-function currentTokenUsage() {
-  if (!tokenUsage.totalTokens) return undefined;
-  const out = { ...tokenUsage };
-  if (hasCostTotal) out.costTotal = costTotal;
-  return out;
-}
-
-function markToolStarted(id, name) {
-  const key = id ? String(id) : undefined;
-  if (key && seenToolCallIds.has(key)) return;
-  if (key) seenToolCallIds.add(key);
-  const toolName = name ? String(name) : "unknown";
-  toolUsage.total += 1;
-  toolUsage.byName[toolName] = (toolUsage.byName[toolName] || 0) + 1;
-}
-
-function markToolFailed(id) {
-  const key = id ? String(id) : undefined;
-  if (key && failedToolCallIds.has(key)) return;
-  if (key) failedToolCallIds.add(key);
-  toolUsage.failed += 1;
-}
-
-function currentToolUsage() {
-  if (!toolUsage.total && !toolUsage.failed) return undefined;
-  return { total: toolUsage.total, failed: toolUsage.failed, byName: { ...toolUsage.byName } };
-}
-
-function renderWindowsArgument(value) {
-  if (value.length > 0 && !/[ \\t"]/.test(value)) return value;
-  let rendered = "\\"";
-  let backslashes = 0;
-  for (const char of value) {
-    if (char === "\\\\") {
-      backslashes += 1;
-      continue;
-    }
-    if (char === "\\"") {
-      rendered += "\\\\".repeat(backslashes * 2 + 1);
-      rendered += "\\"";
-      backslashes = 0;
-      continue;
-    }
-    if (backslashes > 0) {
-      rendered += "\\\\".repeat(backslashes);
-      backslashes = 0;
-    }
-    rendered += char;
-  }
-  if (backslashes > 0) rendered += "\\\\".repeat(backslashes * 2);
-  rendered += "\\"";
-  return rendered;
-}
-
-function assertWindowsLimit(stage, args) {
-  if (process.platform !== "win32") return;
-  const measured = [launch.executable, ...launch.argvPrefix, ...args].map(renderWindowsArgument).join(" ").length + 1;
-  if (measured > WINDOWS_COMMAND_LINE_LIMIT) {
-    const error = new Error("pi_command_line_too_long: " + stage + " measured UTF-16 command line length " + String(measured) + " exceeds limit " + String(WINDOWS_COMMAND_LINE_LIMIT));
-    error.code = "pi_command_line_too_long";
-    throw error;
-  }
-}
-
-function emitUnifiedTelemetry(payload) {
-  const out = { type: "background-task-telemetry", ...payload };
-  const tokens = currentTokenUsage();
-  const tools = currentToolUsage();
-  if (tokens && !out.tokenUsage) out.tokenUsage = tokens;
-  if (tools && !out.toolUsage) out.toolUsage = tools;
-  if (agentModel && !out.model) out.model = agentModel;
-  process.stdout.write(JSON.stringify(out) + "\\n");
-}
-
-function emitActivity(activity) {
-  process.stdout.write(JSON.stringify({ type: "background-task-activity", ...activity }) + "\\n");
-}
-
-function summarizeArgs(args) {
-  if (!args || typeof args !== "object") return "";
-  const pick = (value) => {
-    if (typeof value === "string" && value.trim()) return value.trim().slice(0, 200);
-    if (typeof value === "number" && Number.isFinite(value)) return String(value);
-    return undefined;
-  };
-  const preferred = ["path", "file_path", "file", "filename", "command", "cmd", "pattern", "query", "url", "name", "value", "text", "message"];
-  for (const key of preferred) { const summary = pick(args[key]); if (summary) return summary; }
-  for (const key of Object.keys(args)) { const summary = pick(args[key]); if (summary) return summary; }
-  return "";
-}
-
-function emitAssistantActivity(message) {
-  const content = message && Array.isArray(message.content) ? message.content : [];
-  for (const part of content) {
-    if (!part || typeof part !== "object") continue;
-    if (part.type === "text" && typeof part.text === "string" && part.text.trim()) {
-      emitActivity({ kind: "assistant_text", text: part.text });
-    } else if (part.type === "thinking" || part.type === "reasoning") {
-      const text = typeof part.text === "string" ? part.text : (typeof part.thinking === "string" ? part.thinking : "");
-      if (text.trim()) emitActivity({ kind: "reasoning", text: text });
-    }
-  }
-}
-
-function resolveModelName(fromMessage, fromArgs, providerFromArgs) {
-  const message = fromMessage ? String(fromMessage) : "";
-  const args = fromArgs ? String(fromArgs) : "";
-  const bareOf = (value) => value.includes("/") ? value.split("/").pop() : value;
-  if (message && message.includes("/")) return message;
-  if (args && args.includes("/") && (!message || bareOf(args) === message)) return args;
-  const primary = message || args;
-  if (!primary) return undefined;
-  if (primary.includes("/")) return primary;
-  if (providerFromArgs) return providerFromArgs + "/" + primary;
-  if (index.defaultProvider) return index.defaultProvider + "/" + primary;
-  return primary;
-}
-
-function parseInvocation(argv) {
-  const out = [];
-  let model;
-  let provider;
-  let hasMode = false;
-  let modeValue;
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === "-p" || arg === "--print") continue;
-    if (arg === "--mode") {
-      hasMode = true;
-      modeValue = argv[i + 1];
-      out.push(arg);
-      if (i + 1 < argv.length) out.push(argv[++i]);
-      continue;
-    }
-    if (arg.startsWith("--mode=")) {
-      hasMode = true;
-      modeValue = arg.slice("--mode=".length);
-      out.push(arg);
-      continue;
-    }
-    if (arg === "--model" && i + 1 < argv.length) {
-      model = argv[i + 1];
-      out.push(arg, argv[++i]);
-      continue;
-    }
-    if (arg.startsWith("--model=")) model = arg.slice("--model=".length);
-    if (arg === "--provider" && i + 1 < argv.length) {
-      provider = argv[i + 1];
-      out.push(arg, argv[++i]);
-      continue;
-    }
-    if (arg.startsWith("--provider=")) provider = arg.slice("--provider=".length);
-    out.push(arg);
-  }
-  if (hasMode && modeValue !== "json") return { args: argv, parseJson: false, model, provider };
-  if (!hasMode) out.unshift("--mode", "json");
-  return { args: out, parseJson: true, model, provider };
-}
-
-function resolveWindow(modelFromArgs, providerFromArgs, modelFromMessage) {
-  const candidates = [];
-  if (modelFromMessage) candidates.push(modelFromMessage);
-  if (modelFromArgs) candidates.push(modelFromArgs);
-  if (modelFromArgs && providerFromArgs && !modelFromArgs.includes("/")) candidates.push(providerFromArgs + "/" + modelFromArgs);
-  if (modelFromArgs && index.defaultProvider && !modelFromArgs.includes("/")) candidates.push(index.defaultProvider + "/" + modelFromArgs);
-  if (index.defaultModel && index.defaultProvider) candidates.push(index.defaultProvider + "/" + index.defaultModel);
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    if (index.byQualifiedId[candidate]) return index.byQualifiedId[candidate];
-    const bare = String(candidate).includes("/") ? String(candidate).split("/").pop() : String(candidate);
-    if (bare && index.byId[bare]) return index.byId[bare];
-  }
-  return index.defaultContextWindow || 0;
-}
-
-function countToolCallsFromMessage(message) {
-  const content = message && Array.isArray(message.content) ? message.content : [];
-  for (const part of content) {
-    if (part && part.type === "toolCall") markToolStarted(part.id, part.name);
-  }
-}
-
-function emitMessageTelemetry(message, modelFromArgs, providerFromArgs) {
-  const usage = addTokenUsage(message && message.usage);
-  const resolvedModel = resolveModelName(message && message.model, modelFromArgs, providerFromArgs);
-  if (resolvedModel) agentModel = resolvedModel;
-  const contextWindow = resolveWindow(modelFromArgs, providerFromArgs, message && message.model);
-  const contextUsage = usage.totalTokens && contextWindow
-    ? { tokens: usage.totalTokens, contextWindow, percent: (usage.totalTokens / contextWindow) * 100 }
-    : undefined;
-  if (contextUsage) process.stdout.write(JSON.stringify({ type: "background-task-context-usage", ...contextUsage }) + "\\n");
-  const payload = {};
-  if (contextUsage) payload.contextUsage = contextUsage;
-  emitUnifiedTelemetry(payload);
-}
-
-function emitToolTelemetry() {
-  emitUnifiedTelemetry({});
-}
-
-const parsed = parseInvocation(process.argv.slice(2));
-let child;
-let buffer = "";
-try {
-  const childArgs = [...launch.argvPrefix, ...parsed.args];
-  assertWindowsLimit("telemetry-wrapper-pi", parsed.args);
-  child = spawn(launch.executable, childArgs, { stdio: ["ignore", "pipe", "pipe"], env: process.env, shell: false, windowsHide: true });
-} catch (error) {
-  const message = error && typeof error.message === "string" ? error.message : String(error);
-  process.stderr.write("[pi-bg telemetry wrapper error: " + message + "]\\n");
-  process.exitCode = 1;
-}
-
-if (child) {
-  if (!parsed.parseJson) {
-    child.stdout.pipe(process.stdout);
-  } else {
-    child.stdout.on("data", (chunk) => {
-      buffer += chunk.toString();
-      const lines = buffer.split("\\n");
-      buffer = lines.pop() || "";
-      for (const line of lines) processLine(line);
-    });
-  }
-  child.stderr.on("data", (chunk) => process.stderr.write(chunk));
-  child.on("error", (error) => {
-    process.stderr.write("[pi-bg telemetry wrapper error: " + error.message + "]\\n");
-  });
-  child.on("close", (code, signal) => {
-    if (parsed.parseJson && buffer.trim()) processLine(buffer);
-    // Never call process.exit() here: the final message telemetry may still be
-    // buffered on wrapper stdout, and forced exit can publish a stale context
-    // snapshot from the preceding assistant turn. exitCode lets Node drain the
-    // pipe; signal termination is deferred through the same stdout barrier.
-    process.stdout.write("", () => {
-      if (signal) process.kill(process.pid, signal);
-      else process.exitCode = code ?? 0;
-    });
-  });
-}
-
-function processLine(line) {
-  if (!line.trim()) return;
-  let event;
-  try {
-    event = JSON.parse(line);
-  } catch {
-    process.stdout.write(line + "\\n");
-    return;
-  }
-  if (event.type === "tool_execution_start") {
-    const toolName = event.toolName || event.tool_name || "tool";
-    markToolStarted(event.toolCallId || event.tool_call_id, toolName);
-    emitActivity({ kind: "tool_start", tool: String(toolName), argsSummary: summarizeArgs(event.args || event.arguments || event.input || event.parameters) });
-    emitToolTelemetry();
-    return;
-  }
-  if (event.type === "tool_execution_end") {
-    const toolName = event.toolName || event.tool_name || "tool";
-    if (event.isError) markToolFailed(event.toolCallId || event.tool_call_id);
-    emitActivity({ kind: "tool_end", tool: String(toolName), isError: !!event.isError, error: typeof event.error === "string" ? event.error : undefined });
-    emitToolTelemetry();
-    return;
-  }
-  if (event.type === "message_end" && event.message && event.message.role === "assistant") {
-    emitAssistantActivity(event.message);
-    countToolCallsFromMessage(event.message);
-    emitMessageTelemetry(event.message, parsed.model, parsed.provider);
-  }
-}
-`;
-}
-
-interface ContextUsagePayload extends JsonObject {
-  readonly contextWindow?: unknown;
-  readonly tokens?: unknown;
-  readonly percent?: unknown;
-}
-
-interface TokenUsagePayload extends JsonObject {
-  readonly input?: unknown;
-  readonly output?: unknown;
-  readonly cacheRead?: unknown;
-  readonly cacheWrite?: unknown;
-  readonly totalTokens?: unknown;
-  readonly costTotal?: unknown;
-}
-
-interface ToolUsagePayload extends JsonObject {
-  readonly byName?: unknown;
-  readonly failed?: unknown;
-  readonly total?: unknown;
-}
-
-function normalizeContextUsage(value: unknown): TaskContextUsage | undefined {
-  if (!isJsonObject(value)) return undefined;
-  const input: ContextUsagePayload = value;
-  const rawContextWindow = input.contextWindow;
-  const contextWindow =
-    typeof rawContextWindow === 'number' &&
-    Number.isFinite(rawContextWindow) &&
-    rawContextWindow > 0
-      ? Math.floor(rawContextWindow)
-      : undefined;
-  if (!contextWindow) return undefined;
-  const rawTokens = input.tokens;
-  const tokens =
-    rawTokens === null
-      ? null
-      : typeof rawTokens === 'number' && Number.isFinite(rawTokens) && rawTokens >= 0
-        ? Math.floor(rawTokens)
-        : null;
-  const rawPercent = input.percent;
-  const percent =
-    rawPercent === null
-      ? null
-      : typeof rawPercent === 'number' && Number.isFinite(rawPercent) && rawPercent >= 0
-        ? rawPercent
-        : tokens === null
-          ? null
-          : (tokens / contextWindow) * 100;
-  return { tokens, contextWindow, percent };
-}
-
-function parseContextUsageXml(xml: string): TaskContextUsage | undefined {
-  const readNumber = (tag: string): number | null | undefined => {
-    const match = new RegExp(`<${tag}>(.*?)</${tag}>`, 'i').exec(xml);
-    if (!match) return undefined;
-    const raw = match[1]?.trim();
-    if (raw === 'null' || raw === '?') return null;
-    const parsed = Number(raw);
-    return Number.isFinite(parsed) ? parsed : undefined;
-  };
-  const tokens = readNumber('tokens');
-  const contextWindow = readNumber('context-window') ?? readNumber('contextWindow');
-  const percent = readNumber('percent');
-  return normalizeContextUsage({ tokens, contextWindow, percent });
-}
-
-function nonNegativeInteger(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
-}
-
-function normalizeModel(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  return trimmed.length > 120 ? trimmed.slice(0, 120) : trimmed;
-}
-
-function normalizeTokenUsage(value: unknown): TaskTokenUsage | undefined {
-  if (!isJsonObject(value)) return undefined;
-  const input: TokenUsagePayload = value;
-  const usage: TaskTokenUsage = {
-    input: nonNegativeInteger(input.input),
-    output: nonNegativeInteger(input.output),
-    cacheRead: nonNegativeInteger(input.cacheRead),
-    cacheWrite: nonNegativeInteger(input.cacheWrite),
-    totalTokens: nonNegativeInteger(input.totalTokens),
-  };
-  if (usage.totalTokens <= 0)
-    usage.totalTokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
-  const rawCostTotal = input.costTotal;
-  if (typeof rawCostTotal === 'number' && Number.isFinite(rawCostTotal) && rawCostTotal >= 0)
-    usage.costTotal = rawCostTotal;
-  return usage.totalTokens > 0 ? usage : undefined;
-}
-
-function normalizeToolUsage(value: unknown): TaskToolUsage | undefined {
-  if (!isJsonObject(value)) return undefined;
-  const input: ToolUsagePayload = value;
-  const byName: Record<string, number> = {};
-  const rawByName = input.byName;
-  if (isJsonObject(rawByName)) {
-    for (const [name, count] of Object.entries(rawByName)) {
-      const normalized = nonNegativeInteger(count);
-      if (normalized > 0) byName[name] = normalized;
-    }
-  }
-  const byNameTotal = Object.values(byName).reduce((sum, count) => sum + count, 0);
-  const failed = nonNegativeInteger(input.failed);
-  const total = Math.max(nonNegativeInteger(input.total), byNameTotal, failed);
-  return total > 0 || failed > 0 ? { total, failed, byName } : undefined;
-}
-
-interface TelemetryControlPayload extends JsonObject {
-  readonly type?: unknown;
-  readonly contextUsage?: unknown;
-  readonly tokenUsage?: unknown;
-  readonly toolUsage?: unknown;
-  readonly model?: unknown;
-}
-
-interface TelemetryDelta {
-  context?: TaskContextUsage | undefined;
-  tokens?: TaskTokenUsage | undefined;
-  tools?: TaskToolUsage | undefined;
-  model?: string | undefined;
 }
 
 function noopOnChange(): void {}
@@ -1301,12 +775,6 @@ export class BackgroundTaskRegistry {
       );
     }
     const surviveReload = options.surviveReload === true;
-    if (surviveReload && options.isAgent === true) {
-      throw new ReloadSurvivalError(
-        'pi_bg_survive_reload_requires_non_agent',
-        'surviveReload requires isAgent:false',
-      );
-    }
     const reloadLease = surviveReload ? this.currentReloadLease() : undefined;
     if (surviveReload && reloadLease === undefined) {
       throw new ReloadSurvivalError(
@@ -1341,12 +809,6 @@ export class BackgroundTaskRegistry {
   ): Promise<BgTask> {
     const normalizedCommand = command.trim();
     if (!normalizedCommand) throw new Error('Background command is empty');
-    if (options.isAgent === true) {
-      throw new ReloadSurvivalError(
-        'pi_bg_survive_reload_requires_non_agent',
-        'surviveReload requires isAgent:false',
-      );
-    }
     if (
       this.reloadShellOwner === undefined ||
       this.reloadShellIdentity === undefined ||
@@ -1408,7 +870,6 @@ export class BackgroundTaskRegistry {
       exitCode: undefined,
       pid: undefined,
       bytesWritten: 0,
-      isAgent: false,
       surviveReload: true,
       notified: false,
       notifyOnCompletion: options.notifyOnCompletion ?? true,
@@ -1543,49 +1004,14 @@ export class BackgroundTaskRegistry {
     if (!normalizedCommand) throw new Error('Background command is empty');
     this.assertTaskAdmissionOpen('a background task', admission);
 
-    const isAgent = options.isAgent ?? false;
-    const shellPolicy = this.resolvedShellPolicy();
-    const baseInvocation = shellInvocationForPolicy(normalizedCommand, shellPolicy);
-    const piTelemetryRequested = isAgent && commandMayLaunchPiAgent(normalizedCommand, this.env);
-    const piTelemetryLaunch =
-      piTelemetryRequested && shellPolicy.supportsPosixFunctionWrapper
-        ? resolvePiLaunch({ platform: this.platform })
-        : undefined;
-
     const dir = await this.awaitTaskAdmissionBoundary(this.ensureRuntimeDir(ctx), admission);
     this.assertTaskAdmissionOpen('a background task', admission);
     const id = this.makeTaskIdFn();
     const outputAbsPath = join(dir.abs, `${id}.output`);
     const metadataAbsPath = join(dir.abs, `${id}.json`);
     const outputPath = join(dir.display, `${id}.output`);
-    let commandToSpawn = normalizedCommand;
-    let wrapperAbsPath: string | undefined;
-    try {
-      if (piTelemetryRequested && shellPolicy.supportsPosixFunctionWrapper) {
-        if (piTelemetryLaunch === undefined)
-          throw new Error('Pi telemetry launch spec was not resolved');
-        wrapperAbsPath = join(dir.abs, `${id}.pi-telemetry-wrapper.cjs`);
-        try {
-          await writeFile(
-            wrapperAbsPath,
-            createPiTelemetryWrapperSource(buildModelWindowIndex(ctx), piTelemetryLaunch),
-            { encoding: 'utf8', signal: admission.controller.signal },
-          );
-        } catch (error) {
-          if (admission.controller.signal.aborted) throw this.taskAdmissionError(admission);
-          throw error;
-        }
-        this.assertTaskAdmissionOpen('a background task', admission);
-        commandToSpawn = `pi() { ${shellQuote(process.execPath)} ${shellQuote(wrapperAbsPath)} "$@"; }\n${normalizedCommand}`;
-      }
-    } catch (error) {
-      if (wrapperAbsPath !== undefined) await rm(wrapperAbsPath, { force: true });
-      throw error;
-    }
-    const invocation =
-      commandToSpawn === normalizedCommand
-        ? baseInvocation
-        : shellInvocationForPolicy(commandToSpawn, shellPolicy);
+    const shellPolicy = this.resolvedShellPolicy();
+    const invocation = shellInvocationForPolicy(normalizedCommand, shellPolicy);
     const timeoutSeconds =
       typeof options.timeoutSeconds === 'number' &&
       Number.isFinite(options.timeoutSeconds) &&
@@ -1614,7 +1040,6 @@ export class BackgroundTaskRegistry {
       exitCode: undefined,
       pid: undefined,
       bytesWritten: 0,
-      isAgent,
       surviveReload: false,
       notified: false,
       notifyOnCompletion: options.notifyOnCompletion ?? true,
@@ -1627,13 +1052,6 @@ export class BackgroundTaskRegistry {
       shellPolicy: shellPolicySnapshot(shellPolicy),
       waiters: [],
     };
-    if (commandToSpawn !== normalizedCommand) task.telemetryWrapped = true;
-    if (piTelemetryRequested && !shellPolicy.supportsPosixFunctionWrapper) {
-      task.telemetryUnavailableReason =
-        shellPolicy.dialect === 'cmd'
-          ? WIN32_CMD_PI_TELEMETRY_UNAVAILABLE_REASON
-          : NON_POSIX_SHELL_PI_TELEMETRY_UNAVAILABLE_REASON;
-    }
     this.assertTaskAdmissionOpen('a background task', admission);
     this.tasks.set(id, task);
 
@@ -1672,10 +1090,10 @@ export class BackgroundTaskRegistry {
       this.captureSpawnedChild(task, child);
 
       child.stdout?.on('data', (data) => {
-        this.appendChildOutput(task, data, 'stdout');
+        this.appendChildOutput(task, data);
       });
       child.stderr?.on('data', (data) => {
-        this.appendChildOutput(task, data, 'stderr');
+        this.appendChildOutput(task, data);
       });
 
       child.on('error', (error) => {
@@ -1737,11 +1155,7 @@ export class BackgroundTaskRegistry {
         let cleanupError: unknown;
         if (task.child === undefined) {
           try {
-            await this.discardUnspawnedTask(task, [
-              outputAbsPath,
-              metadataAbsPath,
-              ...(wrapperAbsPath === undefined ? [] : [wrapperAbsPath]),
-            ]);
+            await this.discardUnspawnedTask(task, [outputAbsPath, metadataAbsPath]);
           } catch (cleanupFailure) {
             cleanupError = cleanupFailure;
           }
@@ -1884,84 +1298,6 @@ export class BackgroundTaskRegistry {
     await next;
   }
 
-  private ingestTelemetry(task: BgTask, text: string): void {
-    if (!text) return;
-    const telemetryText = `${task.contextUsageBuffer ?? ''}${text}`;
-    let latestContext = task.contextUsage;
-    let latestTokens = task.tokenUsage;
-    let latestTools = task.toolUsage;
-    let latestModel = task.model;
-    for (const line of telemetryText.split(/\r?\n/)) {
-      if (!line.includes('background-task-')) continue;
-      const trimmed = line.trim();
-      if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-        try {
-          const parsed = parseJsonText(trimmed);
-          if (!isJsonObject(parsed)) continue;
-          const payload: TelemetryControlPayload = parsed;
-          if (payload.type === 'background-task-context-usage') {
-            latestContext = normalizeContextUsage(payload) ?? latestContext;
-          } else if (payload.type === 'background-task-telemetry') {
-            latestContext = normalizeContextUsage(payload.contextUsage) ?? latestContext;
-            latestTokens = normalizeTokenUsage(payload.tokenUsage) ?? latestTokens;
-            latestTools = normalizeToolUsage(payload.toolUsage) ?? latestTools;
-            latestModel = normalizeModel(payload.model) ?? latestModel;
-          }
-        } catch {
-          // Ignore malformed optional telemetry; task output remains authoritative for debugging.
-        }
-      }
-    }
-    const xmlMatches = telemetryText.matchAll(
-      /<background-task-context-usage>[\s\S]*?<\/background-task-context-usage>/gi,
-    );
-    for (const match of xmlMatches) latestContext = parseContextUsageXml(match[0]) ?? latestContext;
-
-    const lastNewline = Math.max(telemetryText.lastIndexOf('\n'), telemetryText.lastIndexOf('\r'));
-    let retained = lastNewline >= 0 ? telemetryText.slice(lastNewline + 1) : telemetryText;
-    const lastXmlOpen = telemetryText.toLowerCase().lastIndexOf('<background-task-context-usage');
-    const lastXmlClose = telemetryText
-      .toLowerCase()
-      .lastIndexOf('</background-task-context-usage>');
-    if (lastXmlOpen > lastXmlClose) retained = telemetryText.slice(lastXmlOpen);
-    task.contextUsageBuffer = retained.slice(-TELEMETRY_BUFFER_CHARS);
-
-    this.commitTelemetry(task, {
-      context: latestContext,
-      tokens: latestTokens,
-      tools: latestTools,
-      model: latestModel,
-    });
-  }
-
-  /** Apply the latest parsed telemetry to a task, persisting metadata and notifying the UI only on change. */
-  private commitTelemetry(task: BgTask, next: TelemetryDelta): void {
-    const before = JSON.stringify({
-      contextUsage: task.contextUsage,
-      tokenUsage: task.tokenUsage,
-      toolUsage: task.toolUsage,
-      model: task.model,
-    });
-    if (next.context !== undefined) task.contextUsage = next.context;
-    if (next.tokens !== undefined) task.tokenUsage = next.tokens;
-    if (next.tools !== undefined) task.toolUsage = next.tools;
-    if (next.model !== undefined) task.model = next.model;
-    const after = JSON.stringify({
-      contextUsage: task.contextUsage,
-      tokenUsage: task.tokenUsage,
-      toolUsage: task.toolUsage,
-      model: task.model,
-    });
-    if (before !== after) {
-      void this.writeMetadata(task).catch((error: unknown) => {
-        this.logger.error(
-          `[background-tasks] failed to write telemetry metadata for ${task.id}:`,
-          error,
-        );
-      });
-    }
-  }
-
   /** Cap-enforcing sink for all persisted task output; terminates the task once the byte cap is exceeded. */
   private writeToStream(task: BgTask, buffer: Buffer): void {
     if (!task.stream || task.stream.destroyed) return;
@@ -2002,92 +1338,11 @@ export class BackgroundTaskRegistry {
     this.writeToStream(task, Buffer.from(text, 'utf8'));
   }
 
-  private appendChildOutput(
-    task: BgTask,
-    data: Buffer | string,
-    source: 'stdout' | 'stderr',
-  ): void {
+  private appendChildOutput(task: BgTask, data: Buffer | string): void {
     if (!task.stream || task.stream.destroyed) return;
     const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
     if (buffer.length === 0) return;
-    if (task.telemetryWrapped) {
-      // Wrapped Pi agents stream control lines on stdout (telemetry + activity); child
-      // stderr is raw diagnostics and is always passed through to the transcript verbatim.
-      if (source === 'stdout') this.processAgentStdout(task, buffer.toString('utf8'));
-      else this.writeToStream(task, buffer);
-      return;
-    }
-    this.ingestTelemetry(task, buffer.toString('utf8'));
     this.writeToStream(task, buffer);
-  }
-
-  /** Reconstruct wrapped-agent stdout into whole control lines, routing telemetry to metrics and activity to the transcript. */
-  private processAgentStdout(task: BgTask, text: string): void {
-    const buffered = `${task.agentStdoutBuffer ?? ''}${text}`;
-    const lastNewline = buffered.lastIndexOf('\n');
-    task.agentStdoutBuffer = lastNewline >= 0 ? buffered.slice(lastNewline + 1) : buffered;
-    if (lastNewline < 0) return;
-    const latest: TelemetryDelta = {};
-    for (const line of buffered.slice(0, lastNewline).split('\n'))
-      this.consumeAgentLine(task, line, latest);
-    this.commitTelemetry(task, latest);
-  }
-
-  /** Flush a trailing partial wrapped-agent line on finalize so the last transcript fragment is never lost. */
-  private flushAgentStdout(task: BgTask): void {
-    const remainder = task.agentStdoutBuffer;
-    if (!remainder) return;
-    task.agentStdoutBuffer = '';
-    const latest: TelemetryDelta = {};
-    this.consumeAgentLine(task, remainder, latest);
-    this.commitTelemetry(task, latest);
-  }
-
-  private consumeAgentLine(task: BgTask, rawLine: string, latest: TelemetryDelta): void {
-    const line = rawLine.replace(/\r$/, '');
-    const trimmed = line.trim();
-    if (!trimmed) return;
-    if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
-      this.writeNotice(task, `${line}\n`);
-      return;
-    }
-    let parsed: unknown;
-    try {
-      parsed = parseJsonText(trimmed);
-    } catch {
-      this.writeNotice(task, `${line}\n`);
-      return;
-    }
-    if (!isJsonObject(parsed)) {
-      this.writeNotice(task, `${line}\n`);
-      return;
-    }
-    const record: TelemetryControlPayload = parsed;
-    const type = record.type;
-    if (type === 'background-task-context-usage') {
-      const context = normalizeContextUsage(record);
-      if (context) latest.context = context;
-      return;
-    }
-    if (type === 'background-task-telemetry') {
-      const context = normalizeContextUsage(record.contextUsage);
-      if (context) latest.context = context;
-      const tokens = normalizeTokenUsage(record.tokenUsage);
-      if (tokens) latest.tokens = tokens;
-      const tools = normalizeToolUsage(record.toolUsage);
-      if (tools) latest.tools = tools;
-      const model = normalizeModel(record.model);
-      if (model) latest.model = model;
-      return;
-    }
-    const activity = parseAgentActivity(parsed);
-    if (activity) {
-      const formatted = formatAgentActivityLine(activity);
-      if (formatted) this.writeNotice(task, `${formatted}\n`);
-      return;
-    }
-    // Unknown JSON object: pass through to the transcript rather than silently dropping it.
-    this.writeNotice(task, `${line}\n`);
   }
 
   private beginPosixProcessGroupKill(task: BgTask, armGrace: boolean): PosixProcessGroupKillState {
@@ -3092,20 +2347,7 @@ export class BackgroundTaskRegistry {
     task.exitCode = exitCode;
     task.signal = signal ?? null;
 
-    // Keep status="running" until the final wrapped-agent fragment has been
-    // consumed and the output plus terminal metadata are durable. Publishing a
-    // terminal state earlier lets bg_status observe the previous assistant
-    // turn's context snapshot and recreates the same false-completion race the
-    // the terminal publisher is required to prevent.
     try {
-      if (task.telemetryWrapped) {
-        // Child-process close can be observed before the wrapper stdout listener has
-        // committed its last parsed telemetry batch. Wait for a short quiet window,
-        // then flush the trailing partial line, so completed status never races
-        // ahead of the final assistant-turn context/token/tool snapshot.
-        await new Promise<void>((resolve) => setTimeout(resolve, 25));
-        this.flushAgentStdout(task);
-      }
       if (task.stream && !task.stream.destroyed) await closeAndFsyncOutputStream(task.stream);
     } catch (finalizeError) {
       finalStatus = 'failed';

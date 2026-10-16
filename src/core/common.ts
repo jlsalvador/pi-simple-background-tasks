@@ -41,29 +41,6 @@ export class ReloadSurvivalError extends Error {
   }
 }
 
-export type JsonObject = Readonly<Record<PropertyKey, unknown>>;
-
-export interface TaskContextUsage {
-  tokens: number | null;
-  contextWindow: number;
-  percent: number | null;
-}
-
-export interface TaskTokenUsage {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  totalTokens: number;
-  costTotal?: number;
-}
-
-export interface TaskToolUsage {
-  total: number;
-  failed: number;
-  byName: Record<string, number>;
-}
-
 export interface ReloadSurvivalSnapshotV1 {
   schemaVersion: 'pi-background-tasks.reload-shell.v1';
   authority: 'same-process-live-owner';
@@ -228,7 +205,6 @@ export interface BgTaskSnapshot {
   signal?: string | null | undefined;
   pid?: number | undefined;
   bytesWritten: number;
-  isAgent: boolean;
   surviveReload: boolean;
   reloadSurvival?: ReloadSurvivalSnapshotV1 | undefined;
   error?: string | undefined;
@@ -236,11 +212,6 @@ export interface BgTaskSnapshot {
   notifyOnCompletion: boolean;
   triggerOnCompletion: boolean;
   timeoutSeconds?: number | undefined;
-  contextUsage?: TaskContextUsage | undefined;
-  tokenUsage?: TaskTokenUsage | undefined;
-  toolUsage?: TaskToolUsage | undefined;
-  model?: string | undefined;
-  telemetryUnavailableReason?: string | undefined;
   /** Immutable non-secret shell selection for ordinary shell tasks. */
   shellPolicy?: ShellPolicySnapshot | undefined;
 }
@@ -251,7 +222,6 @@ export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   metadataAbsPath: string;
   eventsAbsPath?: string | undefined;
   stderrAbsPath?: string | undefined;
-  wrapperAbsPath?: string | undefined;
   child?: BackgroundTaskChildProcess | undefined;
   /** Immutable in-memory ownership captured from a detached POSIX spawn; never restored from metadata. */
   ownedPosixProcessGroupId?: number | undefined;
@@ -275,12 +245,6 @@ export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   terminalPublishRetryHandle?: NodeJS.Timeout | undefined;
   /** Optional protocol barrier used by EventBus run requests so early child exits cannot publish before the run response is observable. */
   terminalPublicationGate?: Promise<void> | undefined;
-  contextUsageBuffer?: string | undefined;
-  /** True when this task launched a telemetry-wrapped Pi agent; its stdout carries control lines, not raw output. */
-  telemetryWrapped?: boolean | undefined;
-  /** Partial trailing stdout line held between chunks while reconstructing wrapped-agent control lines. */
-  agentStdoutBuffer?: string | undefined;
-  telemetryUnavailableReason?: string | undefined;
   /** In-memory same-process authority for an opted ordinary shell task; never serialized. */
   reloadExecution?: ReloadableShellExecutionV1 | undefined;
   /** Fresh-registry terminal host delivery state for an imported owner execution. */
@@ -375,7 +339,6 @@ export interface BgKillDetails {
 export interface StartTaskOptions {
   name?: string | undefined;
   description?: string | undefined;
-  isAgent?: boolean | undefined;
   timeoutSeconds?: number | undefined;
   notifyOnCompletion?: boolean | undefined;
   triggerOnCompletion?: boolean | undefined;
@@ -387,15 +350,6 @@ export interface StartTaskOptions {
 export const DEFAULT_LOG_BYTES = Math.min(DEFAULT_MAX_BYTES, 50 * 1024);
 export const MAX_LOG_BYTES = Math.min(DEFAULT_MAX_BYTES, 50 * 1024);
 export const COMMAND_PREVIEW_CHARS = 90;
-const parseJsonValue: (text: string) => unknown = globalThis.JSON.parse;
-
-export function isJsonObject(value: unknown): value is JsonObject {
-  return typeof value === 'object' && value !== null;
-}
-
-export function parseJsonText(text: string): unknown {
-  return parseJsonValue(text);
-}
 
 export function sanitizePathSegment(value: string): string {
   const sanitized = value.replace(/[^a-zA-Z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '');
@@ -498,12 +452,10 @@ function parseNameValueAndRest(valueAndRest: string): { value: string; rest: str
 export function parseBgCommandArgs(args: string): {
   name?: string;
   command: string;
-  isAgent: boolean;
   surviveReload: boolean;
 } {
   let input = args.trim();
   let name: string | undefined;
-  let isAgent = false;
   let surviveReload = false;
 
   while (input) {
@@ -526,26 +478,6 @@ export function parseBgCommandArgs(args: string): {
         if (!parsed) throw new Error(`${prefix} requires a task name`);
         name = normalizeTaskName(parsed.value);
         input = parsed.rest;
-        consumed = true;
-        break;
-      }
-    }
-    if (consumed) continue;
-
-    for (const flag of ['--agent', '--llm-agent']) {
-      if (input === flag || input.startsWith(`${flag} `) || input.startsWith(`${flag}\t`)) {
-        isAgent = true;
-        input = input.slice(flag.length).trimStart();
-        consumed = true;
-        break;
-      }
-    }
-    if (consumed) continue;
-
-    for (const flag of ['--script', '--no-agent']) {
-      if (input === flag || input.startsWith(`${flag} `) || input.startsWith(`${flag}\t`)) {
-        isAgent = false;
-        input = input.slice(flag.length).trimStart();
         consumed = true;
         break;
       }
@@ -585,15 +517,7 @@ export function parseBgCommandArgs(args: string): {
     break;
   }
 
-  if (surviveReload && isAgent) {
-    throw new ReloadSurvivalError(
-      'pi_bg_survive_reload_requires_non_agent',
-      'surviveReload requires isAgent:false',
-    );
-  }
-  return name
-    ? { name, command: input, isAgent, surviveReload }
-    : { command: input, isAgent, surviveReload };
+  return name ? { name, command: input, surviveReload } : { command: input, surviveReload };
 }
 
 export function formatDuration(ms: number): string {
@@ -606,129 +530,6 @@ export function formatDuration(ms: number): string {
   const hours = Math.floor(minutes / 60);
   const remMinutes = minutes % 60;
   return `${String(hours)}h${remMinutes > 0 ? `${String(remMinutes)}m` : ''}`;
-}
-
-export function formatCompactNumber(count: number): string {
-  const normalized = Math.max(0, Math.floor(count));
-  if (normalized < 1000) return normalized.toString();
-  if (normalized < 10000) return `${(normalized / 1000).toFixed(1)}k`;
-  if (normalized < 1000000) return `${String(Math.round(normalized / 1000))}k`;
-  if (normalized < 10000000) return `${(normalized / 1000000).toFixed(1)}M`;
-  return `${String(Math.round(normalized / 1000000))}M`;
-}
-
-function formatContextUsageSummary(usage?: TaskContextUsage): string | undefined {
-  if (usage?.contextWindow === undefined || usage.contextWindow <= 0) return undefined;
-  const window = formatCompactNumber(usage.contextWindow);
-  if (usage.percent === null || usage.tokens === null) return `ctx=?/${window}`;
-  return `ctx=${usage.percent.toFixed(1)}%/${window}`;
-}
-
-function formatTokenUsageSummary(usage?: TaskTokenUsage): string | undefined {
-  if (!usage || usage.totalTokens <= 0) return undefined;
-  return `tokens=${formatCompactNumber(usage.totalTokens)}`;
-}
-
-function formatToolUsageSummary(usage?: TaskToolUsage): string | undefined {
-  if (!usage || (usage.total <= 0 && usage.failed <= 0)) return undefined;
-  const failed = usage.failed > 0 ? ` failed=${String(usage.failed)}` : '';
-  return `tools=${String(usage.total)}${failed}`;
-}
-
-function formatModelSummary(model?: string): string | undefined {
-  if (!model) return undefined;
-  return `model=${model}`;
-}
-
-/**
- * Human-readable activity transcript for telemetry-wrapped Pi agents.
- *
- * The wrapper emits one `background-task-activity` control line per meaningful
- * child-agent event (assistant text, reasoning, tool start, tool end) so the
- * registry can render "what the agent is actually doing" into the task output
- * file instead of leaking raw telemetry JSON. Both the parser and the formatter
- * are pure so the visible transcript is fully unit-testable.
- */
-const AGENT_ACTIVITY_TYPE = 'background-task-activity';
-const AGENT_ACTIVITY_DETAIL_MAX = 80;
-
-export type AgentActivity =
-  | { kind: 'assistant_text'; text: string }
-  | { kind: 'reasoning'; text: string }
-  | { kind: 'tool_start'; tool: string; argsSummary: string }
-  | { kind: 'tool_end'; tool: string; isError: boolean; error?: string };
-
-interface AgentActivityPayload extends JsonObject {
-  readonly type?: unknown;
-  readonly kind?: unknown;
-  readonly text?: unknown;
-  readonly tool?: unknown;
-  readonly argsSummary?: unknown;
-  readonly isError?: unknown;
-  readonly error?: unknown;
-}
-
-function readActivityString(
-  record: AgentActivityPayload,
-  key: 'text' | 'tool' | 'argsSummary' | 'error',
-): string | undefined {
-  const value = record[key];
-  return typeof value === 'string' ? value : undefined;
-}
-
-/** Narrow a parsed `background-task-activity` control payload into a typed {@link AgentActivity}. */
-export function parseAgentActivity(payload: unknown): AgentActivity | undefined {
-  if (!isJsonObject(payload)) return undefined;
-  const record: AgentActivityPayload = payload;
-  if (record.type !== AGENT_ACTIVITY_TYPE) return undefined;
-  const kind = record.kind;
-  if (kind === 'assistant_text' || kind === 'reasoning') {
-    const text = readActivityString(record, 'text');
-    if (text === undefined) return undefined;
-    return { kind, text };
-  }
-  if (kind === 'tool_start') {
-    const tool = readActivityString(record, 'tool');
-    if (!tool) return undefined;
-    return { kind, tool, argsSummary: readActivityString(record, 'argsSummary') ?? '' };
-  }
-  if (kind === 'tool_end') {
-    const tool = readActivityString(record, 'tool');
-    if (!tool) return undefined;
-    const activity: AgentActivity = { kind, tool, isError: record.isError === true };
-    const error = readActivityString(record, 'error');
-    if (error !== undefined && error.trim().length > 0) activity.error = error;
-    return activity;
-  }
-  return undefined;
-}
-
-/**
- * Render an {@link AgentActivity} into a single transcript line, or `undefined`
- * when the event carries nothing worth showing (blank text, a successful tool
- * end). Successful tool ends are intentionally silent: the matching `→` start
- * line already announced the call, and the next line implies completion.
- */
-export function formatAgentActivityLine(activity: AgentActivity): string | undefined {
-  if (activity.kind === 'assistant_text') {
-    const text = activity.text.replace(/\s+$/u, '');
-    return text.trim().length > 0 ? text : undefined;
-  }
-  if (activity.kind === 'reasoning') {
-    const text = activity.text.replace(/\s+$/u, '');
-    return text.trim().length > 0 ? `\u2026 ${text}` : undefined;
-  }
-  if (activity.kind === 'tool_start') {
-    const summary = compactWhitespace(activity.argsSummary);
-    const suffix =
-      summary.length > 0 ? ` ${truncateChars(summary, AGENT_ACTIVITY_DETAIL_MAX)}` : '';
-    return `\u2192 ${activity.tool}${suffix}`;
-  }
-  if (!activity.isError) return undefined;
-  const detail = activity.error
-    ? `: ${truncateChars(compactWhitespace(activity.error), AGENT_ACTIVITY_DETAIL_MAX)}`
-    : '';
-  return `\u2717 ${activity.tool} failed${detail}`;
 }
 
 export function shellQuote(value: string): string {
@@ -1050,7 +851,6 @@ export function snapshot(task: BgTask): BgTaskSnapshot {
     signal: task.signal,
     pid: task.pid,
     bytesWritten: task.bytesWritten,
-    isAgent: task.isAgent,
     surviveReload: task.surviveReload === true,
     reloadSurvival: task.reloadSurvival,
     error: task.error,
@@ -1058,11 +858,6 @@ export function snapshot(task: BgTask): BgTaskSnapshot {
     notifyOnCompletion: task.notifyOnCompletion,
     triggerOnCompletion: task.triggerOnCompletion,
     timeoutSeconds: task.timeoutSeconds,
-    contextUsage: task.contextUsage,
-    tokenUsage: task.tokenUsage,
-    toolUsage: task.toolUsage,
-    model: task.model,
-    telemetryUnavailableReason: task.telemetryUnavailableReason,
     shellPolicy: task.shellPolicy,
   };
 }
@@ -1083,16 +878,7 @@ export function formatSnapshotList(tasks: BgTaskSnapshot[], now = Date.now()): s
       const code = task.exitCode !== undefined ? ` exit=${String(task.exitCode)}` : '';
       const pid = task.pid !== undefined ? ` pid=${String(task.pid)}` : '';
       const error = task.error ? ` error=${truncateChars(task.error, 80)}` : '';
-      const telemetry = [
-        formatContextUsageSummary(task.contextUsage),
-        formatModelSummary(task.model),
-        formatTokenUsageSummary(task.tokenUsage),
-        formatToolUsageSummary(task.toolUsage),
-      ]
-        .filter(Boolean)
-        .join(' ');
-      const telemetryText = telemetry ? ` ${telemetry}` : '';
-      return `${statusIcon} ${task.id} ${task.status} ${age}${code}${pid}${telemetryText} — ${truncateChars(taskDisplayName(task), COMMAND_PREVIEW_CHARS)}${error}\n    output: ${task.outputPath}`;
+      return `${statusIcon} ${task.id} ${task.status} ${age}${code}${pid} — ${truncateChars(taskDisplayName(task), COMMAND_PREVIEW_CHARS)}${error}\n    output: ${task.outputPath}`;
     })
     .join('\n');
 }
