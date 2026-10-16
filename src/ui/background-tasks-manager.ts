@@ -7,6 +7,7 @@ import {
   type TUI,
   truncateToWidth,
   visibleWidth,
+  wrapTextWithAnsi,
 } from '@earendil-works/pi-tui';
 import {
   type BgTaskSnapshot,
@@ -530,7 +531,8 @@ export class BackgroundTasksManager implements Component {
     const lines = [top, row(header), row(subtitleLine), row()];
     for (const line of body) lines.push(row(line));
     lines.push(row());
-    lines.push(row(footer));
+    const footerWidth = Math.max(1, inner - 1);
+    for (const line of wrapTextWithAnsi(footer, footerWidth)) lines.push(row(` ${line}`));
     lines.push(bottom);
     return lines;
   }
@@ -637,7 +639,7 @@ export class BackgroundTasksManager implements Component {
       'bg tasks focused',
       subtitle,
       body,
-      ` ${this.theme.fg('dim', this.listHelp(tasks[this.selectedIndex]))}`,
+      this.theme.fg('dim', this.listHelp(tasks[this.selectedIndex])),
       width,
     );
   }
@@ -672,7 +674,7 @@ export class BackgroundTasksManager implements Component {
     body.push(...this.renderOutputBox(width - 4));
     if (this.actionMessage) body.push(this.theme.fg('warning', ` ${this.actionMessage}`));
     const subtitle = `${task.id} · ${task.status === 'running' ? 'live tail refreshes every second' : 'final output'}`;
-    const footer = ` ${this.theme.fg('dim', this.detailHelp(task))}`;
+    const footer = this.theme.fg('dim', this.detailHelp(task));
     return this.frame(`bg: ${truncateChars(name, 64)}`, subtitle, body, footer, width);
   }
 
