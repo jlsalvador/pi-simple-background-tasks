@@ -2,7 +2,7 @@
 
 **Durable background shell tasks for Pi.**
 
-A KISS fork of [pi-background-tasks](https://github.com/ismailsaleekh/pi-background-tasks). It keeps the core — running long shell jobs in the background without blocking the session.
+A KISS fork of [pi-background-tasks](https://github.com/ismailsaleekh/pi-background-tasks). It keeps the core — running long shell jobs in the background without blocking the session. See [FORK-CHANGES.md](FORK-CHANGES.md) for the full list of changes relative to upstream and how to re-check the divergence.
 
 ## Features
 

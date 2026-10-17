@@ -27,6 +27,7 @@
   "files": [
     "src/",
     "README.md",
+    "FORK-CHANGES.md",
     "LICENSE"
   ],
   "scripts": {
