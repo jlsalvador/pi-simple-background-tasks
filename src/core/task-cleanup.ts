@@ -61,8 +61,23 @@ async function deleteTaskFiles(runDir: string, id: string): Promise<void> {
   await rm(join(runDir, `${id}.output`), { force: true });
 }
 
+async function removeEmptyRunDir(runDir: string): Promise<void> {
+  let entries: string[];
+  try {
+    entries = await readdir(runDir);
+  } catch {
+    return;
+  }
+  if (entries.length > 0) return;
+  try {
+    await rm(runDir, { recursive: true });
+  } catch {
+    // Best effort: a directory that cannot be removed is harmless.
+  }
+}
 // Delete the on-disk files (.json + .output) of finished tasks only.
 // Running tasks are never touched; they are reported in `skipped`.
+// The run directory is removed once it becomes empty.
 export async function cleanupFinishedTasks(options: {
   tasksDir: string;
   sessionRunDir?: string;
@@ -83,6 +98,7 @@ export async function cleanupFinishedTasks(options: {
       return;
     }
     await deleteTaskFiles(runDir, id);
+    await removeEmptyRunDir(runDir);
     summary.deleted.push({ id, status, runDir });
   };
 
