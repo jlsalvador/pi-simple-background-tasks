@@ -426,8 +426,8 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
       {
         overlay: true,
         overlayOptions: {
-          anchor: 'top-center',
-          width: '96%',
+          anchor: 'top-right',
+          width: 96,
           minWidth: 64,
           margin: { top: 1, left: 1, right: 1 },
         },

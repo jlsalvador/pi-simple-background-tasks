@@ -34,7 +34,7 @@ Relative to the 2.6.9 source, the fork changes **63 files (31,260 lines removed,
 - **`/clean` command + `bg_clean` tool** — delete finished tasks (`session` / `all` / `<id>`). New file `src/core/task-cleanup.ts`; empty run directories are removed after cleanup (tasks live under `~/.pi/agent/tasks`).
 - **Task runtime moved to `~/.pi/agent/tasks`** with the PI extension-config pattern (`pi-background-tasks.json`, `tasksDir`).
 - **KISS packaging** — single entry point `src/extension.ts`, no `dist/`, no tests, no docs tree; fork identity in `package.json`.
-- **Task manager UI** — opens at the top of the screen; `d` deletes the selected task; both shortcuts registered (Shift↓ / Ctrl+Alt+B); footer options contextual to the selected task; empty-state footer shows only sensible actions; task detail adapts to terminal height (modal title dropped).
+- **Task manager UI** — opens top-right as a fixed 96-column modal (96 % width left the box stuck left on wide terminals); `d` deletes the selected task; both shortcuts registered (Shift↓ / Ctrl+Alt+B); footer options contextual to the selected task; empty-state footer shows only sensible actions; task detail adapts to terminal height (modal title dropped).
 - **`--agent` flag** removed from `/bg` (stale).
 - **Lazy module loader simplified.**
 - **Dependencies** — pi `^1.3.0`, TypeScript `^7.0.2`, `@types/node ^26.6.5`, tsx `^4.23.15`, typebox `^1.4.1`; peer ranges broadened to `|| ^1.0.0` (installs on pi 1.x, still accepts 0.81.1–0.84.0).
