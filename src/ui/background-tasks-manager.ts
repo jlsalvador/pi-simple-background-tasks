@@ -32,6 +32,13 @@ const STATUS_INTERVAL_MS = 1000;
 const DETAIL_TAIL_BYTES = 128 * 1024;
 const LIST_VISIBLE_ROWS = 14;
 const DETAIL_VISIBLE_OUTPUT_LINES = 12;
+// Fullscreen frame margins: 1 line/column on each side, plus extra space at the
+// bottom so the terminal dock (input editor + footer) stays visible.
+export const FULLSCREEN_MARGINS = { top: 1, left: 1, right: 1, bottom: 6 } as const;
+// The terminal must be bigger than the modal's largest normal size before
+// fullscreen is allowed (content = terminal size minus FULLSCREEN_MARGINS).
+export const FULLSCREEN_MIN_CONTENT_WIDTH = 100;
+export const FULLSCREEN_MIN_CONTENT_HEIGHT = 34;
 const LIGHT_BLUE_BG = '\x1b[48;2;183;223;255m';
 const LIGHT_BLUE_FG = '\x1b[38;2;11;70;110m';
 const LIGHT_BLUE_BORDER = '\x1b[38;2;83;160;215m';
@@ -124,6 +131,8 @@ export interface TaskManagerOptions {
   rerunTask: (task: BgTask) => Promise<BgTask>;
   showOutputPath: (task: BgTask) => void;
   deleteTask: (task: BgTask) => Promise<void>;
+  onFullscreenToggle?: (fullscreen: boolean) => void;
+  onClose?: () => void;
 }
 
 export class BackgroundTasksManager implements Component {
@@ -136,6 +145,11 @@ export class BackgroundTasksManager implements Component {
   private detailFollow = true;
   private detailScrollTop = 0;
   private outputRows = DETAIL_VISIBLE_OUTPUT_LINES;
+  private fullscreen = false;
+  private wrapOutput = false;
+  private lastOutputInnerWidth = 1;
+  private listVisibleRows = LIST_VISIBLE_ROWS;
+  private outputDisplayLines: string[] = [];
   private tailBytesRead = 0;
   private tailTotalBytes = 0;
   private tailTruncated = false;
@@ -192,19 +206,25 @@ export class BackgroundTasksManager implements Component {
       return;
     }
 
+    if (data === 'f' || data === 'F') {
+      this.toggleFullscreen();
+      return;
+    }
+
     if (this.mode === 'detail') {
       this.handleDetailInput(data);
       return;
     }
     this.handleListInput(data);
   }
-
   render(width: number): string[] {
-    const boxWidth = Math.max(2, Math.min(width, 118));
+    if (this.fullscreen && !this.canFullscreen()) this.setFullscreen(false);
+    const boxWidth = Math.max(2, this.fullscreen ? width : Math.min(width, 118));
     return this.mode === 'detail' ? this.renderDetail(boxWidth) : this.renderList(boxWidth);
   }
 
   private close(): void {
+    this.options.onClose?.();
     this.done('closed');
   }
 
@@ -231,13 +251,13 @@ export class BackgroundTasksManager implements Component {
       return;
     }
     if (matchesKey(data, 'pageUp')) {
-      this.selectedIndex = Math.max(0, this.selectedIndex - LIST_VISIBLE_ROWS);
+      this.selectedIndex = Math.max(0, this.selectedIndex - this.listVisibleRows);
       this.ensureSelectionVisible();
       this.tui.requestRender();
       return;
     }
     if (matchesKey(data, 'pageDown')) {
-      this.selectedIndex = Math.min(tasks.length - 1, this.selectedIndex + LIST_VISIBLE_ROWS);
+      this.selectedIndex = Math.min(tasks.length - 1, this.selectedIndex + this.listVisibleRows);
       this.ensureSelectionVisible();
       this.tui.requestRender();
       return;
@@ -310,6 +330,11 @@ export class BackgroundTasksManager implements Component {
       void this.refreshTail();
       return;
     }
+
+    if (data === 'w' || data === 'W') {
+      this.toggleWrap();
+      return;
+    }
     if (data === 'R' && task) {
       void this.rerunTaskFromUi(task);
       return;
@@ -360,8 +385,8 @@ export class BackgroundTasksManager implements Component {
 
   private ensureSelectionVisible(): void {
     if (this.selectedIndex < this.listScroll) this.listScroll = this.selectedIndex;
-    if (this.selectedIndex >= this.listScroll + LIST_VISIBLE_ROWS)
-      this.listScroll = this.selectedIndex - LIST_VISIBLE_ROWS + 1;
+    if (this.selectedIndex >= this.listScroll + this.listVisibleRows)
+      this.listScroll = this.selectedIndex - this.listVisibleRows + 1;
   }
 
   private async stopTaskFromUi(task: BgTask): Promise<void> {
@@ -456,7 +481,7 @@ export class BackgroundTasksManager implements Component {
 
   /** Scroll the detail output window. Scrolling up pauses the live tail; reaching the bottom resumes it. */
   private scrollDetail(delta: number): void {
-    const maxTop = Math.max(0, this.detailLines.length - this.outputRows);
+    const maxTop = Math.max(0, this.outputDisplayLines.length - this.outputRows);
     if (maxTop === 0) return;
     if (this.detailFollow) {
       this.detailFollow = false;
@@ -544,15 +569,19 @@ export class BackgroundTasksManager implements Component {
     if (allRunning > 0) parts.push('a stop all');
     if (historyCount > 0) parts.push(`h ${this.showHistory ? 'hide' : 'show'} history`);
     if (hasSelection) parts.push('R rerun', 'c path');
+    parts.push('f fullscreen');
     parts.push('x close');
     return parts.filter((part) => part.length > 0).join(' · ');
   }
 
   private detailHelp(task: BgTask): string {
+    const wrapHint = this.wrapOutput ? 'w truncate' : 'w wrap';
     const parts = [
       '↑/↓ scroll',
       '← list',
       'r refresh',
+      wrapHint,
+      'f fullscreen',
       this.taskActionLabel(task),
       'R rerun',
       'c path',
@@ -577,6 +606,14 @@ export class BackgroundTasksManager implements Component {
     const subtitle = subtitleParts.join(' · ');
 
     const body: string[] = [];
+    const footerLines = wrapTextWithAnsi(
+      this.theme.fg('dim', this.listHelp(tasks[this.selectedIndex], allRunning, historyCount)),
+      Math.max(1, width - 3),
+    ).length;
+    let listRows = this.computeListRows(footerLines, false, !!this.actionMessage);
+    if (tasks.length > listRows)
+      listRows = this.computeListRows(footerLines, true, !!this.actionMessage);
+    this.listVisibleRows = listRows;
     if (tasks.length === 0) {
       const message =
         allTasks.length === 0
@@ -587,7 +624,7 @@ export class BackgroundTasksManager implements Component {
       body.push(this.theme.fg('dim', message));
     } else {
       const maxNameWidth = Math.max(12, width - 78);
-      const visible = tasks.slice(this.listScroll, this.listScroll + LIST_VISIBLE_ROWS);
+      const visible = tasks.slice(this.listScroll, this.listScroll + this.listVisibleRows);
       for (let i = 0; i < visible.length; i++) {
         const task = visible[i];
         if (!task) continue;
@@ -614,10 +651,10 @@ export class BackgroundTasksManager implements Component {
         if (selected) row = lightBlue(padAnsi(truncateToWidth(row, width - 4), width - 4));
         body.push(row);
       }
-      if (tasks.length > LIST_VISIBLE_ROWS) {
+      if (tasks.length > this.listVisibleRows) {
         const firstVisible = formatCount(this.listScroll + 1);
         const lastVisible = formatCount(
-          Math.min(tasks.length, this.listScroll + LIST_VISIBLE_ROWS),
+          Math.min(tasks.length, this.listScroll + this.listVisibleRows),
         );
         const totalVisible = formatCount(tasks.length);
         body.push(
@@ -643,51 +680,135 @@ export class BackgroundTasksManager implements Component {
     const name = taskDisplayName(task);
     const status = statusColor(this.theme, task.status);
     const exit = formatExitCodeText(task.exitCode);
+    const hasDescription =
+      !!task.description && compactWhitespace(task.description) !== compactWhitespace(name);
+    this.lastOutputInnerWidth = Math.max(1, width - 6);
+    const description = task.description ?? '';
     const body: string[] = [
-      ` ${this.theme.fg('toolTitle', 'Name:')} ${this.theme.fg('accent', name)}`,
-      ` ${this.theme.fg('toolTitle', 'ID:')} ${this.theme.fg('accent', task.id)}`,
+      ...(hasDescription
+        ? [
+            ` ${this.theme.fg('toolTitle', 'Description:')} ${truncateToWidth(
+              description,
+              width - 16,
+            )}`,
+          ]
+        : []),
       ` ${this.theme.fg('toolTitle', 'Status:')} ${status}${this.theme.fg('dim', exit)}`,
       ` ${this.theme.fg('toolTitle', 'Runtime:')} ${taskAge(task)}${this.theme.fg('dim', formatPidText(task.pid))}`,
-      ` ${this.theme.fg('toolTitle', 'Started:')} ${formatTime(task.startTime)}${task.endTime ? this.theme.fg('dim', ` · ended ${formatTime(task.endTime)}`) : ''}`,
+      ` ${this.theme.fg('toolTitle', 'Started:')} ${formatTime(task.startTime)}${
+        task.endTime ? this.theme.fg('dim', ` · ended ${formatTime(task.endTime)}`) : ''
+      }`,
       ` ${this.theme.fg('toolTitle', 'Output:')} ${this.theme.fg('accent', task.outputPath)}`,
-    ];
-    if (task.description && compactWhitespace(task.description) !== compactWhitespace(name)) {
-      body.push(
-        ` ${this.theme.fg('toolTitle', 'Description:')} ${truncateToWidth(task.description, width - 16)}`,
-      );
-    }
-    body.push(
       ` ${this.theme.fg('toolTitle', 'Command:')} ${truncateToWidth(task.command, width - 13)}`,
-    );
+    ];
     if (task.error) body.push(` ${this.theme.fg('error', `Error: ${task.error}`)}`);
     body.push('', ` ${this.theme.fg('toolTitle', 'Output tail:')}`);
+    const footerLines = wrapTextWithAnsi(
+      this.theme.fg('dim', this.detailHelp(task)),
+      Math.max(1, width - 3),
+    ).length;
     this.outputRows = this.computeOutputRows(
-      wrapTextWithAnsi(this.detailHelp(task), Math.max(1, width - 3)).length,
-      !!task.description && compactWhitespace(task.description) !== compactWhitespace(name),
+      footerLines,
+      hasDescription,
       !!task.error,
       !!this.actionMessage,
     );
+    this.outputDisplayLines = this.detailLines.flatMap((line) =>
+      this.wrapOutput ? wrapTextWithAnsi(line, this.lastOutputInnerWidth) : [line],
+    );
     body.push(...this.renderOutputBox(width - 4));
-    if (this.actionMessage) body.push(this.theme.fg('warning', ` ${this.actionMessage}`));
-    const subtitle = `${task.id} · ${task.status === 'running' ? 'live tail refreshes every second' : 'final output'}`;
+    if (this.actionMessage) body.push(this.theme.fg('warning', `  ${this.actionMessage}`));
+    const subtitle = `${task.id} · ${name}`;
     const footer = this.theme.fg('dim', this.detailHelp(task));
     return this.frame(subtitle, body, footer, width);
   }
 
-  /** Output-box rows that fit the terminal, so the whole detail stays visible in short panes. */
+  /** Output-box rows that fit the terminal. Fullscreen fills the height instead of capping at 12. */
   private computeOutputRows(
     footerLines: number,
     hasDescription: boolean,
     hasError: boolean,
     hasAction: boolean,
   ): number {
-    // Fixed detail lines excluding the output-box content rows: frame chrome
-    // (top, subtitle, two blanks, footer, bottom) + six fields + command +
-    // "Output tail:" + the output box's own top/bottom/status rows.
     const fixed =
-      17 + footerLines + (hasDescription ? 1 : 0) + (hasError ? 1 : 0) + (hasAction ? 1 : 0);
-    const available = this.terminalRows() - 2;
-    return Math.max(1, Math.min(DETAIL_VISIBLE_OUTPUT_LINES, available - fixed));
+      15 + footerLines + (hasDescription ? 1 : 0) + (hasError ? 1 : 0) + (hasAction ? 1 : 0);
+    const available = this.fullscreen
+      ? this.terminalRows() - FULLSCREEN_MARGINS.top - FULLSCREEN_MARGINS.bottom
+      : this.terminalRows() - 2;
+    const cap = this.fullscreen ? Number.POSITIVE_INFINITY : DETAIL_VISIBLE_OUTPUT_LINES;
+    return Math.max(1, Math.min(cap, available - fixed));
+  }
+
+  /** Task rows the list box can show: 14 in normal mode, or the height left in fullscreen. */
+  private computeListRows(footerLines: number, hasShowing: boolean, hasAction: boolean): number {
+    if (!this.fullscreen) return LIST_VISIBLE_ROWS;
+    const fixed = 5 + footerLines + (hasShowing ? 1 : 0) + (hasAction ? 1 : 0);
+    const available = this.terminalRows() - FULLSCREEN_MARGINS.top - FULLSCREEN_MARGINS.bottom;
+    return Math.max(1, available - fixed);
+  }
+
+  private setFullscreen(next: boolean): void {
+    if (next === this.fullscreen) return;
+    this.fullscreen = next;
+    this.options.onFullscreenToggle?.(next);
+  }
+
+  /**
+   * Toggle fullscreen in either view. Entering is gated on the terminal being big
+   * enough to exceed the modal's largest normal size.
+   */
+  private toggleFullscreen(): void {
+    if (this.fullscreen) {
+      this.setFullscreen(false);
+    } else if (this.canFullscreen()) {
+      this.setFullscreen(true);
+    } else {
+      const minCols =
+        FULLSCREEN_MIN_CONTENT_WIDTH + FULLSCREEN_MARGINS.left + FULLSCREEN_MARGINS.right;
+      const minRows =
+        FULLSCREEN_MIN_CONTENT_HEIGHT + FULLSCREEN_MARGINS.top + FULLSCREEN_MARGINS.bottom;
+      this.actionMessage = `Terminal too small for fullscreen (need at least ${minCols}x${minRows}).`;
+    }
+    this.invalidate();
+  }
+
+  private canFullscreen(): boolean {
+    const cols = process.stdout.columns ?? 0;
+    const rows = process.stdout.rows ?? 0;
+    const contentWidth = cols - FULLSCREEN_MARGINS.left - FULLSCREEN_MARGINS.right;
+    const contentHeight = rows - FULLSCREEN_MARGINS.top - FULLSCREEN_MARGINS.bottom;
+    return (
+      contentWidth >= FULLSCREEN_MIN_CONTENT_WIDTH && contentHeight >= FULLSCREEN_MIN_CONTENT_HEIGHT
+    );
+  }
+
+  /**
+   * Toggle wrap/truncate for the output tail. Keeps the cursor on the same logical
+   * line by remapping the display-line scroll position to that line.
+   */
+  private toggleWrap(): void {
+    const inner = this.lastOutputInnerWidth;
+    if (this.detailFollow) {
+      this.wrapOutput = !this.wrapOutput;
+      this.invalidate();
+      return;
+    }
+    const prevCounts = this.detailLines.map((line) =>
+      this.wrapOutput ? wrapTextWithAnsi(line, inner).length : 1,
+    );
+    let lineIndex = 0;
+    let acc = 0;
+    while (
+      lineIndex + 1 < prevCounts.length &&
+      acc + prevCounts[lineIndex] - 1 < this.detailScrollTop
+    ) {
+      acc += prevCounts[lineIndex];
+      lineIndex += 1;
+    }
+    this.wrapOutput = !this.wrapOutput;
+    this.detailScrollTop = acc;
+    this.detailFollow = false;
+    this.invalidate();
   }
 
   private terminalRows(): number {
@@ -706,9 +827,9 @@ export class BackgroundTasksManager implements Component {
     } else if (this.detailLines.length === 0) {
       lines.push(row(this.theme.fg('dim', 'No output yet')));
     } else {
-      const maxTop = Math.max(0, this.detailLines.length - this.outputRows);
+      const maxTop = Math.max(0, this.outputDisplayLines.length - this.outputRows);
       const start = this.detailFollow ? maxTop : Math.min(this.detailScrollTop, maxTop);
-      const windowLines = this.detailLines.slice(start, start + this.outputRows);
+      const windowLines = this.outputDisplayLines.slice(start, start + this.outputRows);
       for (const line of windowLines) lines.push(row(this.theme.fg('toolOutput', line)));
     }
     while (lines.length < this.outputRows + 1) lines.push(row());
@@ -718,7 +839,7 @@ export class BackgroundTasksManager implements Component {
   }
 
   private outputStatusLine(): string {
-    const total = this.detailLines.length;
+    const total = this.outputDisplayLines.length;
     if (!this.detailFollow && total > 0) {
       const maxTop = Math.max(0, total - this.outputRows);
       const start = Math.min(this.detailScrollTop, maxTop);

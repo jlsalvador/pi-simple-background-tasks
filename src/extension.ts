@@ -9,7 +9,13 @@ import type {
   ToolRenderResultOptions,
 } from '@earendil-works/pi-coding-agent';
 import { formatSize } from '@earendil-works/pi-coding-agent';
-import { type KeyId, Text } from '@earendil-works/pi-tui';
+import {
+  type KeyId,
+  type OverlayHandle,
+  type OverlayOptions,
+  Text,
+  type TUI,
+} from '@earendil-works/pi-tui';
 import { type Static, Type } from 'typebox';
 import {
   type BgKillDetails,
@@ -47,7 +53,12 @@ import {
 } from './core/reload-shell-owner.js';
 import { createShellPolicyGuidanceHandler, initializeShellPolicy } from './core/shell-policy.js';
 import type { CleanupScope, CleanupSummary } from './core/task-cleanup.js';
-import type { BackgroundTaskForUi, TaskManagerResult } from './ui/background-tasks-manager.js';
+import {
+  type BackgroundTaskForUi,
+  type BackgroundTasksManager,
+  FULLSCREEN_MARGINS,
+  type TaskManagerOptions,
+} from './ui/background-tasks-manager.js';
 
 /**
  * Project-local Pi background task manager.
@@ -381,55 +392,88 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
       );
       return;
     }
+    const normalOptions: OverlayOptions = {
+      anchor: 'top-right',
+      width: 96,
+      minWidth: 64,
+      margin: { top: 1, left: 1, right: 1 },
+    };
+    // Pi resolves overlayOptions once (at overlay creation), so a fullscreen toggle
+    // re-creates the overlay with the same manager instance and fresh options.
+    const fullscreenOptions = (): OverlayOptions => ({
+      anchor: 'top-left',
+      width: '100%',
+      maxHeight: Math.max(
+        1,
+        process.stdout.rows - FULLSCREEN_MARGINS.top - FULLSCREEN_MARGINS.bottom,
+      ),
+      margin: FULLSCREEN_MARGINS,
+    });
+
     const { BackgroundTasksManager } = await taskManagerLoader.run((runtime) => runtime);
-    await ctx.ui.custom<TaskManagerResult>(
-      (tui, theme, _keybindings, done) => {
-        const managerOptions = {
-          getTasks: () => registry.allTasks(),
-          stopTask: async (task: BackgroundTaskForUi) => {
-            await registry.stopTask(registry.resolveTask(task.id), 'user');
-          },
-          stopAllRunning: async () => {
-            const result = await registry.stopAllRunning('user');
-            return result;
-          },
-          rerunTask: async (task: BackgroundTaskForUi) => {
-            const rerunOptions: StartTaskOptions = {
-              name: taskDisplayName(task),
-              surviveReload: task.surviveReload,
-              notifyOnCompletion: true,
-              triggerOnCompletion: false,
-            };
-            if (task.description !== undefined) rerunOptions.description = task.description;
-            if (task.timeoutSeconds !== undefined)
-              rerunOptions.timeoutSeconds = task.timeoutSeconds;
-            const rerun = await startTask(ctx, task.command, rerunOptions);
-            return rerun;
-          },
-          showOutputPath: (task: BackgroundTaskForUi) => {
-            ctx.ui.notify(
-              `Output path for ${taskDisplayName(task)} (${task.id}):\n${task.outputPath}`,
-              'info',
-            );
-          },
-          deleteTask: async (task: BackgroundTaskForUi) => {
-            await registry.cleanupFinishedTasks('one', task.id);
-          },
+    let manager: BackgroundTasksManager | null = null;
+    let currentHandle: OverlayHandle | null = null;
+    let rawTui: TUI | null = null;
+
+    const rePresent = (options: OverlayOptions) => {
+      if (!manager || !rawTui) return;
+      currentHandle?.hide();
+      currentHandle = rawTui.showOverlay(manager, options);
+    };
+
+    const managerOptions: TaskManagerOptions = {
+      getTasks: () => registry.allTasks(),
+      stopTask: async (task: BackgroundTaskForUi) => {
+        await registry.stopTask(registry.resolveTask(task.id), 'user');
+      },
+      stopAllRunning: async () => {
+        const result = await registry.stopAllRunning('user');
+        return result;
+      },
+      rerunTask: async (task: BackgroundTaskForUi) => {
+        const rerunOptions: StartTaskOptions = {
+          name: taskDisplayName(task),
+          surviveReload: task.surviveReload,
+          notifyOnCompletion: true,
+          triggerOnCompletion: false,
         };
-        if (initialTaskId)
-          return new BackgroundTasksManager(tui, theme, done, {
-            ...managerOptions,
-            initialTaskId,
-          });
-        return new BackgroundTasksManager(tui, theme, done, managerOptions);
+        if (task.description !== undefined) rerunOptions.description = task.description;
+        if (task.timeoutSeconds !== undefined) rerunOptions.timeoutSeconds = task.timeoutSeconds;
+        const rerun = await startTask(ctx, task.command, rerunOptions);
+        return rerun;
+      },
+      showOutputPath: (task: BackgroundTaskForUi) => {
+        ctx.ui.notify(
+          `Output path for ${taskDisplayName(task)} (${task.id}):\n${task.outputPath}`,
+          'info',
+        );
+      },
+      deleteTask: async (task: BackgroundTaskForUi) => {
+        await registry.cleanupFinishedTasks('one', task.id);
+      },
+      onFullscreenToggle: (fullscreen) =>
+        rePresent(fullscreen ? fullscreenOptions() : normalOptions),
+      onClose: () => {
+        currentHandle?.hide();
+        currentHandle = null;
+      },
+    };
+
+    await ctx.ui.custom(
+      (tui, theme, _keybindings, done) => {
+        rawTui = tui;
+        const created = new BackgroundTasksManager(tui, theme, done, {
+          ...managerOptions,
+          ...(initialTaskId ? { initialTaskId } : {}),
+        });
+        manager = created;
+        return created;
       },
       {
         overlay: true,
-        overlayOptions: {
-          anchor: 'top-right',
-          width: 96,
-          minWidth: 64,
-          margin: { top: 1, left: 1, right: 1 },
+        overlayOptions: normalOptions,
+        onHandle: (handle) => {
+          currentHandle = handle;
         },
       },
     );
