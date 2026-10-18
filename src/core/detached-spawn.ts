@@ -3,6 +3,7 @@ import { closeSync, openSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { type ResolvedShellPolicy, shellQuote } from './common.js';
 import { writeFileFsynced } from './task-durable.js';
+import { createProcessViaWmi } from './windows-wmi-spawn.js';
 
 /**
  * Detached background-task spawning: the single launch path used by every task.
@@ -13,7 +14,11 @@ import { writeFileFsynced } from './task-durable.js';
  *
  * - POSIX: the child starts fully detached, so it leads its own process group
  *   (`pgid === pid`) and signal authority is `-pgid`, valid from any process.
- * - Windows: the pid is recorded and `taskkill /T /F` owns the whole tree.
+ * - Windows: the outer process is created by the WMI service, so the task is
+ *   outside every process job and console session owned by the Pi activation
+ *   and outlives it (restart, /reload-style reattachments, even a hard kill).
+ *   Ownership of the tree is `taskkill /T /F` via the recorded pid. Output is
+ *   redirected by the spawn's own command line (the extension holds no fd).
  * - Termination: the wrapper writes `<id>.exit` when the user command settles.
  *   Until and unless that marker exists, a running task's process liveness is
  *   probed via the recorded pid; the marker is the terminal source of truth.
@@ -52,11 +57,6 @@ export interface SpawnDetachedTaskOptions {
 }
 
 export interface SpawnDetachedTaskResult {
-  readonly invocation: {
-    readonly shell: string;
-    readonly args: readonly string[];
-    readonly windowsVerbatimArguments: boolean;
-  };
   readonly exitMarkerFile: string;
   readonly exitMarkerTrusted: boolean;
   readonly runnerScriptFile?: string | undefined;
@@ -91,15 +91,48 @@ export function buildPosixWrappedCommand(command: string, exitMarkerFile: string
  * parenthesis inside the user command cannot affect the epilogue. The
  * parenthesized `echo` prevents `%errorlevel%` digits being parsed as handle
  * redirections (`echo 1>file` redirects handle 1 and echoes an empty line).
+ *
+ * The user command runs under a nested `cmd /d /s /c "<command>"` instead of
+ * directly in the runner: a bare `exit N` in the user command terminates the
+ * whole cmd instance and would skip the epilogue lines entirely, while a
+ * nested instance only sets the errorlevel for the runner to record. The
+ * quoting follows the same `/s /c "<command>"` contract as
+ * `shellInvocationForPolicy`, arg-for-arg.
  */
-export function buildWindowsRunnerScript(command: string, exitMarkerFile: string): string {
+export function buildWindowsRunnerScript(
+  command: string,
+  exitMarkerFile: string,
+  shellExecutable: string,
+): string {
   return [
     '@echo off',
-    command,
+    `"${shellExecutable}" /d /s /c "${command}"`,
     `(echo %errorlevel%)>"${exitMarkerFile}"`,
     'exit /b %errorlevel%',
     '',
   ].join('\r\n');
+}
+
+/**
+ * The WMI-created process runs its command under `cmd /d /s /c "..."`; the
+ * redirection is part of that single /c string, so the extension does not need
+ * to hold output file descriptors (the child writes the file directly).
+ *
+ * `cmd /s` keeps the outermost quote pair: it strips the first and last quote
+ * of the /c argument, leaving `<body> 1>"<output>" 2>&1` for command parsing.
+ * A bare `exit N` in the user command therefore still reaches the epilogue
+ * through the runner's nested cmd.
+ */
+export function buildWindowsWmiCommandLine(body: string, outputAbsPath: string): string {
+  return `cmd.exe /d /s /c "${body} 1>"${outputAbsPath}" 2>&1"`;
+}
+
+/**
+ * Body for a wrapped cmd task: one quoted token pointing at the runner file.
+ * The runner script carries the user command and the epilogue.
+ */
+export function buildWindowsRunnerBody(runnerScriptFile: string): string {
+  return `"${runnerScriptFile}"`;
 }
 
 /** True for dialects the wrapper understands; 'none' loses exact exit codes. */
@@ -110,16 +143,25 @@ export function wrapModeForDialect(dialect: ResolvedShellPolicy['dialect']): Det
 }
 
 /**
- * Spawn the user command fully detached with its output opened directly onto
- * the output file. If the wrapper could not be launched, cleanup is done
- * before any task admission is attempted, so a failure never leaves an
- * in-memory orphan or a half-written artifact set behind.
+ * Launch one detached task. Failures clean up every artifact before an error
+ * is thrown, so the caller's failure path never sees a half-written task.
  */
 export async function spawnDetachedTask(
   options: SpawnDetachedTaskOptions,
 ): Promise<SpawnDetachedTaskResult> {
   const platform = options.platform ?? process.platform;
-  const spawnFn = options.spawn ?? mapNodeSpawn;
+  if (platform === 'win32') return spawnWindowsDetachedTask(options);
+  return spawnPosixDetachedTask(options);
+}
+
+/**
+ * Windows: everything goes through the WMI service so the task outlives its
+ * creating process. The runner script (with the exit-marker epilogue) and the
+ * one-shot WMI helper clean up on any launch failure.
+ */
+async function spawnWindowsDetachedTask(
+  options: SpawnDetachedTaskOptions,
+): Promise<SpawnDetachedTaskResult> {
   const id = options.id;
   const taskDirAbs = options.taskDirAbs;
   const outputAbsPath = join(taskDirAbs, `${id}.output`);
@@ -127,39 +169,96 @@ export async function spawnDetachedTask(
   const wrapMode = wrapModeForDialect(options.policy.dialect);
 
   let runnerScriptFile: string | undefined;
-  let invocation: {
-    shell: string;
-    args: string[];
-    windowsVerbatimArguments: boolean;
-  };
-  if (wrapMode === 'posix') {
-    invocation = {
-      shell: options.policy.executable,
-      args: [
-        ...options.policy.argvPrefix,
-        buildPosixWrappedCommand(options.command, exitMarkerFile),
-      ],
-      windowsVerbatimArguments: options.policy.windowsVerbatimArguments,
-    };
-  } else if (wrapMode === 'cmd') {
+  let commandLine: string;
+  if (wrapMode === 'none') {
+    // Unclassified user shell: launch it verbatim under cmd, without an exit
+    // marker; the redirection still writes the task output.
+    const args = [...options.policy.argvPrefix, options.command];
+    commandLine = buildWindowsWmiCommandLine(
+      `${quoteWinArg(options.policy.executable)} ${args.join(' ')}`,
+      outputAbsPath,
+    );
+  } else {
+    // 'cmd' (and defensively any wrapped dialect): the runner file carries the
+    // user command plus the exit-marker epilogue.
     runnerScriptFile = runnerScriptPath(taskDirAbs, id);
     await writeFileFsynced(
       runnerScriptFile,
-      buildWindowsRunnerScript(options.command, exitMarkerFile),
+      buildWindowsRunnerScript(options.command, exitMarkerFile, options.policy.executable),
     );
-    invocation = {
-      shell: options.policy.executable,
-      args: [...options.policy.argvPrefix, runnerScriptFile],
-      windowsVerbatimArguments: options.policy.windowsVerbatimArguments,
-    };
-  } else {
-    // Unclassified user shell: launch unwrapped, without an exit marker.
-    invocation = {
-      shell: options.policy.executable,
-      args: [...options.policy.argvPrefix, options.command],
-      windowsVerbatimArguments: options.policy.windowsVerbatimArguments,
-    };
+    commandLine = buildWindowsWmiCommandLine(
+      buildWindowsRunnerBody(runnerScriptFile),
+      outputAbsPath,
+    );
   }
+
+  const sweepRunner = (): void => {
+    if (runnerScriptFile === undefined) return;
+    try {
+      unlinkSync(runnerScriptFile);
+    } catch {
+      // Best effort; the task dir is swept later if this fails.
+    }
+    runnerScriptFile = undefined;
+  };
+
+  let pid: number;
+  try {
+    const result = await createProcessViaWmi({
+      commandLine,
+      currentDirectory: options.cwd,
+      env: options.env,
+    });
+    pid = result.pid;
+  } catch (error) {
+    sweepRunner();
+    throw error;
+  }
+  if (!Number.isSafeInteger(pid) || pid <= 0) {
+    sweepRunner();
+    throw new Error('detached task spawn failed before a valid pid was acquired');
+  }
+
+  return {
+    exitMarkerFile,
+    exitMarkerTrusted: wrapMode !== 'none',
+    runnerScriptFile,
+    pid,
+    posixProcessGroupId: undefined,
+  };
+}
+
+/**
+ * POSIX: spawn detached with the output file opened directly. The child leads
+ * its own process group, so `-pgid` kills remain authoritative from any
+ * process (the recorded `pgid === pid` is the ownership contract).
+ */
+async function spawnPosixDetachedTask(
+  options: SpawnDetachedTaskOptions,
+): Promise<SpawnDetachedTaskResult> {
+  const spawnFn = options.spawn ?? mapNodeSpawn;
+  const id = options.id;
+  const taskDirAbs = options.taskDirAbs;
+  const outputAbsPath = join(taskDirAbs, `${id}.output`);
+  const exitMarkerFile = exitMarkerPath(taskDirAbs, id);
+  const wrapMode = wrapModeForDialect(options.policy.dialect);
+
+  const invocation =
+    wrapMode === 'posix'
+      ? {
+          shell: options.policy.executable,
+          args: [
+            ...options.policy.argvPrefix,
+            buildPosixWrappedCommand(options.command, exitMarkerFile),
+          ],
+          windowsVerbatimArguments: options.policy.windowsVerbatimArguments,
+        }
+      : {
+          // Unclassified user shell: launch unwrapped, without an exit marker.
+          shell: options.policy.executable,
+          args: [...options.policy.argvPrefix, options.command],
+          windowsVerbatimArguments: options.policy.windowsVerbatimArguments,
+        };
 
   // The child duplicates this descriptor; 'a' keeps both ends in append mode.
   const outFd = openSync(outputAbsPath, 'a', 0o666);
@@ -169,21 +268,13 @@ export async function spawnDetachedTask(
     } catch {
       // The descriptor may already be closed by a partial failure path.
     }
-    if (runnerScriptFile !== undefined) {
-      try {
-        unlinkSync(runnerScriptFile);
-      } catch {
-        // Best effort; the task dir is swept later if this fails.
-      }
-      runnerScriptFile = undefined;
-    }
   };
 
   let child: DetachedSpawnChild;
   try {
     child = spawnFn(invocation.shell, invocation.args, {
       cwd: options.cwd,
-      detached: platform !== 'win32',
+      detached: true,
       stdio: ['ignore', outFd, outFd],
       env: options.env,
       windowsHide: true,
@@ -208,13 +299,17 @@ export async function spawnDetachedTask(
   closeSync(outFd);
 
   return {
-    invocation,
     exitMarkerFile,
     exitMarkerTrusted: wrapMode !== 'none',
-    runnerScriptFile,
     pid,
-    posixProcessGroupId: platform === 'win32' ? undefined : pid,
+    posixProcessGroupId: pid,
   };
+}
+
+/** Quotes one token for a raw CreateProcess command line (no shell here). */
+function quoteWinArg(value: string): string {
+  if (!/[\s"]/.test(value)) return value;
+  return `"${value.replace(/"/g, '\\"')}"`;
 }
 
 function mapNodeSpawn(command: string, args: string[], options: SpawnOptions): DetachedSpawnChild {
