@@ -54,6 +54,8 @@ export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   posixProcessGroupSignalAuthorityReleased?: boolean | undefined;
   /** Absolute marker path; the wrapper writes the exit code here on settlement. */
   exitMarkerAbsPath?: string | undefined;
+  /** False while the detached spawn is still in flight; the poller must not reap it then. */
+  launched?: boolean | undefined;
   /** False only for an unclassified user shell launched without a wrapper. */
   exitMarkerTrusted?: boolean | undefined;
   runnerScriptFile?: string | undefined;

@@ -392,6 +392,7 @@ export class BackgroundTaskRegistry {
       terminalPublicationGate: options.terminalPublicationGate,
       shellPolicy: shellPolicySnapshot(shellPolicy),
       exitMarkerAbsPath: exitMarkerPath(dir.abs, id),
+      launched: false,
       waiters: [],
     };
     this.tasks.set(id, task);
@@ -417,6 +418,8 @@ export class BackgroundTaskRegistry {
       task.exitMarkerAbsPath = result.exitMarkerFile;
       task.exitMarkerTrusted = result.exitMarkerTrusted;
       task.runnerScriptFile = result.runnerScriptFile;
+      // The launch is settled: the poller may reap this task from here on.
+      task.launched = true;
       await this.writeMetadata(task);
       this.ensurePoller();
       return task;
@@ -667,6 +670,8 @@ export class BackgroundTaskRegistry {
       exitMarkerTrusted,
       runnerScriptFile:
         dialect === 'cmd' && record.status === 'running' ? runnerScriptPath(runDir, id) : undefined,
+      // Adopted records fight no in-flight spawn: never in the launching window.
+      launched: true,
       waiters: [],
     };
   }
@@ -799,9 +804,10 @@ export class BackgroundTaskRegistry {
       task.error = `Output exceeded cap of ${formatSize(this.maxOutputBytes)}; terminating task`;
       const notice = `\n\n[background task error: ${task.error}]\n`;
       if (this.platform === 'win32') {
-        // The child's own redirection locks the output file until the tree is
-        // gone, so termination must release it before the notice can land.
+        // The child's own `1>` redirection keeps writing past the append: the
+        // tree must be gone before the notice, or the flood overwrites it.
         this.startTerminate(task);
+        await this.waitForEnd(task, this.stopWaitMs);
         await this.appendNotice(task, notice);
         return;
       }
@@ -820,7 +826,10 @@ export class BackgroundTaskRegistry {
       task.error = `Timed out after ${String(task.timeoutSeconds)}s`;
       const notice = `\n[background task timeout: ${task.error}]\n`;
       if (this.platform === 'win32') {
+        // Same ordering caveat as the output cap: flood bytes must not run
+        // past the append, so the notice goes after the tree stop.
         this.startTerminate(task);
+        await this.waitForEnd(task, this.stopWaitMs);
         await this.appendNotice(task, notice);
         return;
       }
@@ -828,6 +837,12 @@ export class BackgroundTaskRegistry {
       this.startTerminate(task);
       return;
     }
+
+    // Launched tasks only: while the detached spawn is still in flight (WMI
+    // create can take seconds on Windows) the record has no pid and no marker,
+    // which is indistinguishable at this step from a reaped orphan. The spawn
+    // itself settles the record if it fails, so polling it is pure harm.
+    if (task.launched === false) return;
 
     // 5. exited without a marker (wrapper killed externally, or no wrapper)
     if (!this.probeProcessAlive(task)) {
