@@ -97,7 +97,14 @@ Example:
 npm install
 npm run check   # tsc --noEmit && biome check .
 npm run fix     # biome check --write .
+npm test        # registry platform suite (tests/), run per-platform
 ```
+
+`npm test` verifies the detached-task promises (survival across a real parent
+exit, adoption, kills) with `node:test` against processes it genuinely spawns.
+Run it on the platform whose behavior you want to verify: on POSIX it exercises
+process groups and the group kill; on Windows it exercises WMI-created tasks,
+the cmd runner and `taskkill /T /F`. Only the platform-specific pieces skip.
 
 ## License
 

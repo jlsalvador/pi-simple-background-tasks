@@ -12,7 +12,7 @@ This package is a **KISS fork** of
 
 ## Divergence summary
 
-Relative to the 2.6.9 source, the fork changes **70 files (34,214 lines removed, 5,353 added)**, ending with **14 source files** plus a 4-file platform-verification harness:
+Relative to the 2.6.9 source, the fork changes **69 files (34,235 lines removed, 5,275 added)**, ending with **14 source files** plus a 3-file `node:test` platform suite:
 
 | Subsystem (as in 2.6.9) | Fork |
 | --- | --- |
@@ -36,11 +36,11 @@ Relative to the 2.6.9 source, the fork changes **70 files (34,214 lines removed,
 
 - **One Windows kill: `taskkill /T /F`** — the old two-phase ladder (graceful `taskkill /T` window-close termination, then `/F` escalation after a grace timer) is gone: console applications do not honor window-close termination, so the graceful phase could neither stop anything on Windows nor leave time to escalate during a session shutdown (the Pi process would exit first and the un-ref'd escalation timer would die with it). One forced tree kill, outcome checked once. Cap/timeout notices are appended after the tree is terminated because the child's own `1>` redirection holds the output file locked until then.
 
-- **Platform verification harness** (`harness/`) — `harness/posix-matrix.ts` and `harness/win-matrix.ts` drive the registry directly on each platform: completion/exit markers, quoting, timeout and cap kills, detachment across a genuine parent exit, adoption of a dead activation's records, kill of adopted tasks with notification, and no-adoption of terminal records. All checks pass on Linux and on a real Windows 11 VM.
+- **Platform test suite** (`npm test`) — `tests/registry.test.ts` runs the registry against real processes on the platform it is executed on, with the node:test runner through tsx (no new dependencies): completion/exit markers, quoting, timeout and cap kills, detachment across a genuine parent exit, adoption of a dead activation's records, kill of adopted tasks with notification, and no-adoption of terminal records. The two launch races it found — reaping a task while its WMI spawn is still in flight, and flood bytes overwriting cap/timeout notices — had product fixes (see the git history). All tests pass on Linux (8 run, 1 windows-only skip) and on a real Windows 11 VM (8 run, 1 posix-only skip).
 
 - **`/clean` command + `bg_clean` tool** — delete finished tasks (`session` / `all` / `<id>`). New file `src/core/task-cleanup.ts`; empty run directories are removed after cleanup (tasks live under `~/.pi/agent/tasks`).
 - **Task runtime moved to `~/.pi/agent/tasks`** with the PI extension-config pattern (`pi-background-tasks.json`, `tasksDir`).
-- **KISS packaging** — single entry point `src/extension.ts`, no `dist/`, no tests, no docs tree; fork identity in `package.json`.
+- **KISS packaging** — single entry point `src/extension.ts`, no `dist/`, no docs tree; one `node:test` platform suite under `tests/` (`npm test`, not shipped to npm); fork identity in `package.json`.
 - **Task manager UI** — opens top-right as a fixed 96-column modal (96 % width left the box stuck left on wide terminals); `d` deletes the selected task; both shortcuts registered (Shift↓ / Ctrl+Alt+B); footer options contextual to the selected task; empty-state footer shows only sensible actions; task detail adapts to terminal height (modal title dropped); **f** toggles fullscreen (gated on terminal size), **w** toggles output wrap.
 - **`--agent` flag** removed from `/bg` (stale).
 - **Lazy module loader simplified.**
