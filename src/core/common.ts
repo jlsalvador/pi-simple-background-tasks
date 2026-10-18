@@ -1,8 +1,7 @@
-import { accessSync, constants, statSync, type WriteStream } from 'node:fs';
+import { accessSync, constants, statSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { basename, delimiter, extname, isAbsolute, join, resolve, win32 } from 'node:path';
 import { DEFAULT_MAX_BYTES } from '@earendil-works/pi-coding-agent';
-import type { BackgroundTaskChildProcess } from './registry.js';
 
 export const TASK_STATUS_VALUES = ['running', 'completed', 'failed', 'killed'] as const;
 export const TERMINAL_TASK_STATUS_VALUES = ['completed', 'failed', 'killed'] as const;
@@ -10,7 +9,6 @@ export const TERMINAL_TASK_STATUS_VALUES = ['completed', 'failed', 'killed'] as 
 export type TaskStatus = (typeof TASK_STATUS_VALUES)[number];
 export type TerminalTaskStatus = (typeof TERMINAL_TASK_STATUS_VALUES)[number];
 export type KillKind = 'user' | 'timeout' | 'output_cap' | 'shutdown';
-export type ReloadShellStopKind = KillKind | 'handoff_expired';
 
 export type TerminalPublicationState = 'pending' | 'delivered' | 'abandoned';
 export type TerminalPublicationAbandonReason =
@@ -18,178 +16,7 @@ export type TerminalPublicationAbandonReason =
   | 'publisher_closed'
   | 'gate_rejected'
   | 'retry_exhausted'
-  | 'retention_limit'
-  | 'reload_handoff_expired';
-
-export type ReloadSurvivalErrorCode =
-  | 'pi_bg_survive_reload_invalid'
-  | 'pi_bg_survive_reload_requires_non_agent'
-  | 'pi_bg_survive_reload_unsupported_task_kind'
-  | 'pi_bg_reload_owner_unavailable'
-  | 'pi_bg_reload_owner_protocol_incompatible'
-  | 'pi_bg_reload_owner_activation_conflict'
-  | 'pi_bg_reload_owner_stale_claim'
-  | 'pi_bg_reload_handoff_expired';
-
-export class ReloadSurvivalError extends Error {
-  constructor(
-    readonly code: ReloadSurvivalErrorCode,
-    message: string,
-  ) {
-    super(`${code}: ${message}`);
-    this.name = 'ReloadSurvivalError';
-  }
-}
-
-export interface ReloadSurvivalSnapshotV1 {
-  schemaVersion: 'pi-background-tasks.reload-shell.v1';
-  authority: 'same-process-live-owner';
-  hostPid: number;
-  sessionId: string;
-  cwdRealpath: string;
-  launchNonce: string;
-  completionId: string;
-  spawnedAt: number;
-  childPid: number;
-  timeoutDeadlineAt?: number | undefined;
-  outputCapBytes: number;
-  posixProcessGroupId?: number | undefined;
-  windowsTreeRootPid?: number | undefined;
-  leaseGeneration: number;
-  handoffCount: number;
-}
-
-export interface ReloadShellIdentityV1 {
-  readonly hostPid: number;
-  readonly sessionId: string;
-  readonly cwdRealpath: string;
-}
-
-export interface ReloadShellActivationLeaseV1 {
-  readonly protocol: 'pi-background-tasks.reload-shell-owner.v1';
-  readonly hubNonce: string;
-  readonly identityKey: string;
-  readonly generation: number;
-  readonly activationNonce: string;
-}
-
-export interface ReloadShellActivationClaimV1 {
-  readonly protocol: 'pi-background-tasks.reload-shell-owner.v1';
-  readonly hubNonce: string;
-  readonly claimNonce: string;
-  readonly identity: ReloadShellIdentityV1;
-  readonly identityKey: string;
-  readonly generation: number;
-  readonly activationNonce: string;
-  readonly expiresAt?: number | undefined;
-  readonly executions: readonly ReloadableShellExecutionV1[];
-}
-
-export interface ReloadShellProcessV1 {
-  readonly pid?: number | undefined;
-  stdout?:
-    | {
-        on(event: 'data', listener: (data: Buffer | string) => void): unknown;
-        off?(event: 'data', listener: (data: Buffer | string) => void): unknown;
-      }
-    | null
-    | undefined;
-  stderr?:
-    | {
-        on(event: 'data', listener: (data: Buffer | string) => void): unknown;
-        off?(event: 'data', listener: (data: Buffer | string) => void): unknown;
-      }
-    | null
-    | undefined;
-  kill(signal?: NodeJS.Signals): boolean;
-  on(event: 'error', listener: (error: Error) => void): unknown;
-  on(
-    event: 'close',
-    listener: (code: number | null, signal: NodeJS.Signals | null) => void,
-  ): unknown;
-  off?(event: 'error', listener: (error: Error) => void): unknown;
-  off?(
-    event: 'close',
-    listener: (code: number | null, signal: NodeJS.Signals | null) => void,
-  ): unknown;
-}
-
-export interface ReloadShellOwnerEventSinkV1 {
-  readonly onChanged: (execution: ReloadableShellExecutionV1) => void;
-  readonly onTerminal: (execution: ReloadableShellExecutionV1) => void;
-}
-
-export type ReloadShellNotificationState = 'disabled' | 'pending' | 'sending' | 'delivered';
-
-export interface ReloadableShellExecutionV1 {
-  readonly protocol: 'pi-background-tasks.reload-shell-owner.v1';
-  readonly launchNonce: string;
-  readonly completionId: string;
-  readonly task: BgTask;
-  child: ReloadShellProcessV1 | undefined;
-  outputStream: WriteStream | undefined;
-  readonly spawnedAt: number;
-  readonly timeoutDeadlineAt?: number | undefined;
-  readonly outputCapBytes: number;
-  readonly terminal: Promise<BgTask>;
-  readonly requestStop: (kind: ReloadShellStopKind, reason?: string) => Promise<BgTask>;
-  phase: 'starting' | 'running' | 'stop_requested' | 'finalizing' | 'terminal' | 'released';
-  closeObservation?:
-    | {
-        code: number | null;
-        signal: NodeJS.Signals | null;
-        observedAt: number;
-      }
-    | undefined;
-  admissionCommitted: boolean;
-  notificationState: ReloadShellNotificationState;
-  readonly commitInitialMetadata: (signal?: AbortSignal) => Promise<void>;
-  readonly failAdmission: (error: Error) => void;
-  readonly setOwnerEventSink: (sink: ReloadShellOwnerEventSinkV1 | undefined) => void;
-  readonly markAdmissionCommitted: (generation: number, handoffCount: number) => void;
-  readonly updateLeaseAudit: (generation: number, handoffCount: number) => void;
-  readonly abandonReloadHandoff: () => void;
-  readonly beginNotification: (lease: ReloadShellActivationLeaseV1) => string | undefined;
-  readonly finishNotification: (token: string, delivered: boolean) => void;
-  readonly releaseResources: () => void;
-}
-
-export interface ReloadShellHostAdapterV1 {
-  readonly activationNonce: string;
-  readonly onBound: (lease: ReloadShellActivationLeaseV1) => void;
-  readonly onChanged: (execution: ReloadableShellExecutionV1) => void;
-  readonly onTerminal: (execution: ReloadableShellExecutionV1) => void;
-}
-
-export interface ReloadShellOwnerHubV1 {
-  readonly protocol: 'pi-background-tasks.reload-shell-owner.v1';
-  readonly hubNonce: string;
-  beginActivation(
-    identity: ReloadShellIdentityV1,
-    startReason: string,
-    activationNonce: string,
-  ): ReloadShellActivationClaimV1;
-  commitActivation(
-    claim: ReloadShellActivationClaimV1,
-    adapter: ReloadShellHostAdapterV1,
-  ): ReloadShellActivationLeaseV1;
-  abortActivation(claim: ReloadShellActivationClaimV1, error: unknown): void;
-  beginReloadHandoff(lease: ReloadShellActivationLeaseV1): readonly ReloadableShellExecutionV1[];
-  releaseActivation(lease: ReloadShellActivationLeaseV1): void;
-  registerExecution(
-    lease: ReloadShellActivationLeaseV1,
-    execution: ReloadableShellExecutionV1,
-  ): void;
-  markAdmissionCommitted(
-    lease: ReloadShellActivationLeaseV1,
-    execution: ReloadableShellExecutionV1,
-  ): void;
-  releaseExecution(
-    leaseOrClaim: ReloadShellActivationLeaseV1 | ReloadShellActivationClaimV1,
-    execution: ReloadableShellExecutionV1,
-  ): void;
-  isCurrentLease(lease: ReloadShellActivationLeaseV1): boolean;
-}
+  | 'retention_limit';
 
 export interface BgTaskSnapshot {
   id: string;
@@ -204,9 +31,8 @@ export interface BgTaskSnapshot {
   exitCode?: number | null | undefined;
   signal?: string | null | undefined;
   pid?: number | undefined;
+  posixProcessGroupId?: number | undefined;
   bytesWritten: number;
-  surviveReload: boolean;
-  reloadSurvival?: ReloadSurvivalSnapshotV1 | undefined;
   error?: string | undefined;
   notified: boolean;
   notifyOnCompletion: boolean;
@@ -222,13 +48,16 @@ export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   metadataAbsPath: string;
   eventsAbsPath?: string | undefined;
   stderrAbsPath?: string | undefined;
-  child?: BackgroundTaskChildProcess | undefined;
-  /** Immutable in-memory ownership captured from a detached POSIX spawn; never restored from metadata. */
+  /** POSIX group authority captured at spawn; never restored except by adoption. */
   ownedPosixProcessGroupId?: number | undefined;
   /** One-way latch preventing any later signal after group authority is released. */
   posixProcessGroupSignalAuthorityReleased?: boolean | undefined;
-  stream?: WriteStream | undefined;
-  timeoutHandle?: NodeJS.Timeout | undefined;
+  /** Absolute marker path; the wrapper writes the exit code here on settlement. */
+  exitMarkerAbsPath?: string | undefined;
+  /** False only for an unclassified user shell launched without a wrapper. */
+  exitMarkerTrusted?: boolean | undefined;
+  runnerScriptFile?: string | undefined;
+  pollInFlight?: boolean | undefined;
   killKind?: KillKind | undefined;
   killSignalSent?: boolean | undefined;
   killEscalationTimer?: NodeJS.Timeout | undefined;
@@ -245,12 +74,6 @@ export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   terminalPublishRetryHandle?: NodeJS.Timeout | undefined;
   /** Optional protocol barrier used by EventBus run requests so early child exits cannot publish before the run response is observable. */
   terminalPublicationGate?: Promise<void> | undefined;
-  /** In-memory same-process authority for an opted ordinary shell task; never serialized. */
-  reloadExecution?: ReloadableShellExecutionV1 | undefined;
-  /** Fresh-registry terminal host delivery state for an imported owner execution. */
-  reloadHostDeliveryInFlight?: boolean | undefined;
-  reloadHostDeliverySettled?: boolean | undefined;
-  reloadHostNotificationSettled?: boolean | undefined;
   metadataWriteChain?: Promise<void> | undefined;
   waiters: Array<() => void>;
 }
@@ -342,7 +165,6 @@ export interface StartTaskOptions {
   timeoutSeconds?: number | undefined;
   notifyOnCompletion?: boolean | undefined;
   triggerOnCompletion?: boolean | undefined;
-  surviveReload?: boolean | undefined;
   /** @internal EventBus protocol barrier; callers should not set this outside the extension service. */
   terminalPublicationGate?: Promise<void> | undefined;
 }
@@ -452,11 +274,9 @@ function parseNameValueAndRest(valueAndRest: string): { value: string; rest: str
 export function parseBgCommandArgs(args: string): {
   name?: string;
   command: string;
-  surviveReload: boolean;
 } {
   let input = args.trim();
   let name: string | undefined;
-  let surviveReload = false;
 
   while (input) {
     let consumed = false;
@@ -484,26 +304,24 @@ export function parseBgCommandArgs(args: string): {
     }
     if (consumed) continue;
 
+    // Legacy flag: recognized and silently dropped. Task survival across /reload
+    // is now the only behavior, so the flag has nothing left to toggle.
     if (
       input === '--survive-reload' ||
       input.startsWith('--survive-reload ') ||
-      input.startsWith('--survive-reload\t')
+      input.startsWith('--survive-reload\t') ||
+      input.startsWith('--survive-reload=')
     ) {
-      if (surviveReload) {
-        throw new ReloadSurvivalError(
-          'pi_bg_survive_reload_invalid',
-          '/bg accepts --survive-reload at most once',
-        );
+      if (input.startsWith('--survive-reload=')) {
+        // Legacy bare-flag-only policy: a `=` value was never honored, so the
+        // ignored flag consumes its whole value up to the next token.
+        const afterEquals = input.slice('--survive-reload='.length);
+        const valueEnd = afterEquals.search(/\s/u);
+        input = valueEnd === -1 ? '' : afterEquals.slice(valueEnd).trimStart();
+      } else {
+        input = input.slice('--survive-reload'.length).trimStart();
       }
-      surviveReload = true;
-      input = input.slice('--survive-reload'.length).trimStart();
       continue;
-    }
-    if (input.startsWith('--survive-reload=')) {
-      throw new ReloadSurvivalError(
-        'pi_bg_survive_reload_invalid',
-        '/bg accepts only the bare --survive-reload flag',
-      );
     }
 
     if (input === '--') {
@@ -517,7 +335,7 @@ export function parseBgCommandArgs(args: string): {
     break;
   }
 
-  return name ? { name, command: input, surviveReload } : { command: input, surviveReload };
+  return name ? { name, command: input } : { command: input };
 }
 
 export function formatDuration(ms: number): string {
@@ -850,9 +668,8 @@ export function snapshot(task: BgTask): BgTaskSnapshot {
     exitCode: task.exitCode,
     signal: task.signal,
     pid: task.pid,
+    posixProcessGroupId: task.ownedPosixProcessGroupId,
     bytesWritten: task.bytesWritten,
-    surviveReload: task.surviveReload === true,
-    reloadSurvival: task.reloadSurvival,
     error: task.error,
     notified: task.notified,
     notifyOnCompletion: task.notifyOnCompletion,

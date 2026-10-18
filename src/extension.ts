@@ -1,5 +1,3 @@
-import { randomBytes } from 'node:crypto';
-import { realpathSync } from 'node:fs';
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -32,10 +30,6 @@ import {
   normalizeMaxBytes,
   normalizeTaskName,
   parseBgCommandArgs,
-  type ReloadShellActivationClaimV1,
-  type ReloadShellActivationLeaseV1,
-  type ReloadShellIdentityV1,
-  ReloadSurvivalError,
   type StartTaskOptions,
   taskDisplayName,
   truncateChars,
@@ -47,10 +41,6 @@ import {
 } from './core/extension-api.js';
 import { LazyModule, SynchronousActivationCloseFence } from './core/lazy-module.js';
 import { type BackgroundTaskContext, BackgroundTaskRegistry } from './core/registry.js';
-import {
-  getProcessReloadShellOwnerV1,
-  makeReloadShellIdentity,
-} from './core/reload-shell-owner.js';
 import { createShellPolicyGuidanceHandler, initializeShellPolicy } from './core/shell-policy.js';
 import type { CleanupScope, CleanupSummary } from './core/task-cleanup.js';
 import {
@@ -66,9 +56,11 @@ import {
  * Scope:
  * - Explicit background shell jobs only: /bg and bg_run spawn commands directly.
  * - No Ctrl+B support for backgrounding an already-running built-in bash tool.
- * - Opted ordinary shell jobs can hand their same live process ownership to a
- *   fresh extension activation on real same-process reload only.
- * - No PID/file adoption, process-restart survival, or crash recovery.
+ * - Tasks always survive /reload and Pi restarts: every task spawns detached,
+ *   its ownership facts live in its on-disk metadata, and each activation
+ *   adopts still-running records from disk. Pi session shutdown kills all
+ *   running tasks, so exit with care.
+ * - No flag negotiates any of this: there is exactly one launch path.
  */
 
 const COMMAND_PREVIEW_CHARS = 90;
@@ -88,6 +80,7 @@ interface BgToolArgumentRecord {
   readonly timeoutSeconds?: unknown;
   readonly notifyOnCompletion?: unknown;
   readonly triggerOnCompletion?: unknown;
+  /** Legacy argument, silently ignored: survival is now unconditional. */
   readonly surviveReload?: unknown;
 }
 
@@ -117,12 +110,6 @@ const BgRunParams = Type.Object({
     Type.Boolean({
       description:
         'Whether that notification should automatically trigger a follow-up agent turn. Default: true for bg_run; requires notifyOnCompletion.',
-    }),
-  ),
-  surviveReload: Type.Optional(
-    Type.Boolean({
-      description:
-        'Opt in to retaining this exact shell execution across a real same-process Pi reload. Default: false.',
     }),
   ),
 });
@@ -213,15 +200,8 @@ function formatCleanMessage(summary: CleanupSummary): string {
 export default async function backgroundTasksExtension(pi: ExtensionAPI): Promise<void> {
   const config = resolveBackgroundTasksConfig(process.cwd());
   const shellPolicy = initializeShellPolicy();
-  const reloadShellOwner = getProcessReloadShellOwnerV1();
   pi.on('before_agent_start', createShellPolicyGuidanceHandler(shellPolicy));
-  let currentRegistryCtx: BackgroundTaskContext | undefined;
-  let activationLease: ReloadShellActivationLeaseV1 | undefined;
-  let activationIdentity: ReloadShellIdentityV1 | undefined;
-  let pendingActivationClaim: ReloadShellActivationClaimV1 | undefined;
   let disposed = false;
-  let shutdownCleanupStarted = false;
-  let reloadHandoffFailed = false;
   let shutdownReason = 'shutdown';
   const activationCloseFence = new SynchronousActivationCloseFence();
   const taskManagerLoader = new LazyModule(() => import('./ui/background-tasks-manager.js'));
@@ -240,59 +220,22 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     },
     shellPolicy,
     tasksDir: config.tasksDir,
-    reloadShellOwner,
   });
   const eventService: BackgroundTaskExtensionService = installBackgroundTaskExtensionApi({
     events: pi.events,
     registry,
   });
 
-  const beginSessionShutdown = (reason: string): void => {
-    let handoffError: unknown;
-    if (!disposed) {
-      disposed = true;
-      registry.closeTaskAdmissions();
-      if (pendingActivationClaim !== undefined) {
-        const claim = pendingActivationClaim;
-        pendingActivationClaim = undefined;
-        registry.abortReloadActivation(claim);
-        try {
-          reloadShellOwner.abortActivation(
-            claim,
-            new ReloadSurvivalError(
-              'pi_bg_reload_owner_stale_claim',
-              'activation shut down while its reload claim was staging',
-            ),
-          );
-        } catch (error) {
-          handoffError = error;
-        }
-      } else if (reason === 'reload' && activationLease !== undefined) {
-        const lease = activationLease;
-        try {
-          registry.prepareReloadHandoff(lease);
-          activationLease = undefined;
-          activationIdentity = undefined;
-        } catch (error) {
-          reloadHandoffFailed = true;
-          handoffError = error;
-        }
-      }
-      registry.setShuttingDown(true);
-      eventService.close();
-    }
-    // Teardown remains active on repeated calls so even a handle assigned by a
-    // racing continuation is still disposed rather than hidden by idempotence.
-    currentRegistryCtx = undefined;
-    if (handoffError !== undefined) throw handoffError;
+  const beginSessionShutdown = (): void => {
+    if (disposed) return;
+    disposed = true;
+    registry.setShuttingDown(true);
+    eventService.close();
   };
-
-  // Join the one synchronous all-lane barrier before any facade can register
-  // asynchronous cleanup. The core callback performs an eligible reload
-  // handoff first; every lazy lane then closes on the same call stack before
-  // Pi can await any later cleanup handler.
+  // Join the one synchronous all-lane barrier: every lazy lane closes on the
+  // same call stack before Pi can await any later cleanup handler.
   activationCloseFence.add(() => {
-    beginSessionShutdown(shutdownReason);
+    beginSessionShutdown();
   });
   activationCloseFence.add(() => {
     taskManagerLoader.close();
@@ -302,72 +245,21 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     activationCloseFence.close();
   });
 
-  // This is the first session_start callback. Claim synchronously before the
-  // first await, stage/import durably, then expose the fresh host adapter.
-  pi.on('session_start', async (event, ctx) => {
+  pi.on('session_start', async (_event, ctx) => {
+    // A Pi reload binds a fresh extension instance. Adoptions run before any
+    // task can start so notifications continue for tasks running across the
+    // reload, and the poller takes over ownership detection from disk records.
     if (disposed) return;
-    const nextRegistryCtx = registryContext(ctx);
-    const identity = makeReloadShellIdentity(
-      nextRegistryCtx.sessionId ?? '',
-      realpathSync(ctx.cwd),
-    );
-    if (activationLease !== undefined && registry.hasCurrentReloadLease()) {
-      if (
-        activationIdentity?.hostPid !== identity.hostPid ||
-        activationIdentity.sessionId !== identity.sessionId ||
-        activationIdentity.cwdRealpath !== identity.cwdRealpath
-      ) {
-        throw new ReloadSurvivalError(
-          'pi_bg_reload_owner_activation_conflict',
-          'a repeated session_start changed the bound reload owner identity without shutdown',
-        );
-      }
-      currentRegistryCtx = nextRegistryCtx;
-      return;
-    }
-    const activationNonce = randomBytes(16).toString('hex');
-    const claim = reloadShellOwner.beginActivation(identity, event.reason, activationNonce);
-    pendingActivationClaim = claim;
+    registry.setShuttingDown(false);
+    await registry.ensureRuntimeDir(registryContext(ctx));
+    if (disposed) return;
     try {
-      const adapter = await registry.stageReloadActivation(claim);
-      if (pendingActivationClaim !== claim) {
-        // The synchronous shutdown barrier already aborted this claim and
-        // detached staged records while the durable import awaited.
-        registry.abortReloadActivation(claim);
-        return;
-      }
-      if (disposed) {
-        registry.abortReloadActivation(claim);
-        pendingActivationClaim = undefined;
-        reloadShellOwner.abortActivation(
-          claim,
-          new ReloadSurvivalError(
-            'pi_bg_reload_owner_stale_claim',
-            'activation was disposed before reload claim commit',
-          ),
-        );
-        return;
-      }
-      const lease = reloadShellOwner.commitActivation(claim, adapter);
-      pendingActivationClaim = undefined;
-      activationLease = lease;
-      activationIdentity = identity;
-      currentRegistryCtx = nextRegistryCtx;
+      await registry.reconcileTasksFromDisk();
     } catch (error) {
-      registry.abortReloadActivation(claim);
-      if (pendingActivationClaim === claim) pendingActivationClaim = undefined;
-      try {
-        reloadShellOwner.abortActivation(claim, error);
-      } catch (abortError) {
-        if (
-          typeof abortError !== 'object' ||
-          abortError === null ||
-          Reflect.get(abortError, 'code') !== 'pi_bg_reload_owner_stale_claim'
-        ) {
-          throw new AggregateError([error, abortError], 'Reload activation claim and abort failed');
-        }
-      }
-      throw error;
+      console.error(
+        '[background-tasks] failed to reconcile background tasks from disk:',
+        error instanceof Error ? error : new Error(String(error)),
+      );
     }
   });
 
@@ -376,9 +268,7 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     command: string,
     options: StartTaskOptions = {},
   ): Promise<BgTask> {
-    const nextRegistryCtx = registryContext(ctx);
-    currentRegistryCtx = nextRegistryCtx;
-    return registry.startTask(nextRegistryCtx, command, options);
+    return registry.startTask(registryContext(ctx), command, options);
   }
 
   async function openTaskManager(
@@ -433,7 +323,6 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
       rerunTask: async (task: BackgroundTaskForUi) => {
         const rerunOptions: StartTaskOptions = {
           name: taskDisplayName(task),
-          surviveReload: task.surviveReload,
           notifyOnCompletion: true,
           triggerOnCompletion: false,
         };
@@ -504,26 +393,12 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     },
   );
 
-  pi.on('session_start', async (_event, ctx) => {
-    // Pi replacement binds a fresh extension instance. Never revive this old
-    // activation if a late lifecycle dispatch reaches it after shutdown.
-    if (disposed) return;
-    registry.setShuttingDown(false);
-    const nextRegistryCtx = currentRegistryCtx ?? registryContext(ctx);
-    currentRegistryCtx = nextRegistryCtx;
-    await registry.ensureRuntimeDir(nextRegistryCtx);
-    if (disposed) return;
-  });
-
   pi.on('session_shutdown', async (event, ctx) => {
-    beginSessionShutdown(event.reason);
-    if (shutdownCleanupStarted) return;
-    shutdownCleanupStarted = true;
+    if (shutdownReason.length === 0) shutdownReason = event.reason;
+    // Explicitly user-visible sessions always kill running tasks, while /reload,
+    // a Pi restart or a crash cannot reach this handler and thus never kill: the
+    // tasks survive and the next activation adopts them from disk.
     try {
-      // Admission closure aborts cooperative preflight and the drain retains
-      // ownership until subprocess/file/managed cleanup settles. Any admitted
-      // child is inserted synchronously before spawn and is visible below.
-      await registry.waitForTaskAdmissions();
       const running = registry.allTasks().filter((task) => task.status === 'running');
       if (running.length === 0) return;
 
@@ -548,30 +423,15 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
       }
     } finally {
       eventService.close();
-      if ((event.reason !== 'reload' || reloadHandoffFailed) && activationLease !== undefined) {
-        try {
-          await registry.waitForReloadHostSettlement();
-        } catch (error) {
-          console.error(
-            '[background-tasks] reload owner host settlement failed during shutdown:',
-            error,
-          );
-        }
-        registry.releaseReloadActivation(activationLease);
-        activationLease = undefined;
-        activationIdentity = undefined;
-      }
     }
   });
 
   pi.registerCommand('bg', {
-    description:
-      'Start a tracked shell command: /bg [--survive-reload] [--name "Task name"] <command>',
+    description: 'Start a tracked shell command: /bg [--name "Task name"] <command>',
     handler: async (args, ctx) => {
       try {
         const parsed = parseBgCommandArgs(args);
         const taskOptions: StartTaskOptions = {
-          surviveReload: parsed.surviveReload,
           notifyOnCompletion: true,
           triggerOnCompletion: false,
         };
@@ -747,12 +607,8 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
       if (!args || typeof args !== 'object') throw new Error('bg_run arguments must be an object');
       const input = args as BgToolArgumentRecord;
       if (typeof input.command !== 'string') throw new Error('bg_run requires command string');
-      if (Object.hasOwn(input, 'surviveReload') && typeof input.surviveReload !== 'boolean') {
-        throw new ReloadSurvivalError(
-          'pi_bg_survive_reload_invalid',
-          'bg_run surviveReload must be boolean when present',
-        );
-      }
+      // Legacy surviveReload values are silently ignored: task survival across
+      // /reload is now the only behavior, so the knob has nothing left to set.
       const prepared: BgRunParamsValue = {
         command: input.command,
         name:
@@ -766,13 +622,11 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
         prepared.notifyOnCompletion = input.notifyOnCompletion;
       if (typeof input.triggerOnCompletion === 'boolean')
         prepared.triggerOnCompletion = input.triggerOnCompletion;
-      if (typeof input.surviveReload === 'boolean') prepared.surviveReload = input.surviveReload;
       return prepared;
     },
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const taskOptions: StartTaskOptions = {
         name: params.name,
-        surviveReload: params.surviveReload ?? false,
         notifyOnCompletion: params.notifyOnCompletion ?? true,
         triggerOnCompletion: params.triggerOnCompletion ?? true,
       };
