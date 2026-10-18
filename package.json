@@ -32,7 +32,8 @@
   ],
   "scripts": {
     "check": "tsc --noEmit && biome check .",
-    "fix": "biome check --write ."
+    "fix": "biome check --write .",
+    "test": "tsx --test"
   },
   "pi": {
     "extensions": [
