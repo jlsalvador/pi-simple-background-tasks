@@ -8,7 +8,7 @@ A KISS fork of [pi-background-tasks](https://github.com/ismailsaleekh/pi-backgro
 
 - **Run long jobs without blocking**: start a named shell command in the background, keep talking to Pi, and get a completion notification in chat when it finishes.
 - **Durable tasks**: task state is persisted under `~/.pi/agent/tasks`, so it survives session restarts.
-- **Task manager overlay**: a TUI panel lists running and recent tasks with status and bounded output (default **Shift↓**).
+- **Task manager overlay**: a TUI panel lists running and recent tasks with status and bounded output (default **Shift↓**); **f** toggles fullscreen, **w** wraps long output lines.
 - **Survive Pi reloads**: opt in to keeping a shell task alive across a same-process `/reload`.
 - **Cross-platform**: POSIX shell and Windows (process-group kill).
 

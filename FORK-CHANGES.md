@@ -34,10 +34,10 @@ Relative to the 2.6.9 source, the fork changes **63 files (31,260 lines removed,
 - **`/clean` command + `bg_clean` tool** — delete finished tasks (`session` / `all` / `<id>`). New file `src/core/task-cleanup.ts`; empty run directories are removed after cleanup (tasks live under `~/.pi/agent/tasks`).
 - **Task runtime moved to `~/.pi/agent/tasks`** with the PI extension-config pattern (`pi-background-tasks.json`, `tasksDir`).
 - **KISS packaging** — single entry point `src/extension.ts`, no `dist/`, no tests, no docs tree; fork identity in `package.json`.
-- **Task manager UI** — opens top-right as a fixed 96-column modal (96 % width left the box stuck left on wide terminals); `d` deletes the selected task; both shortcuts registered (Shift↓ / Ctrl+Alt+B); footer options contextual to the selected task; empty-state footer shows only sensible actions; task detail adapts to terminal height (modal title dropped).
+- **Task manager UI** — opens top-right as a fixed 96-column modal (96 % width left the box stuck left on wide terminals); `d` deletes the selected task; both shortcuts registered (Shift↓ / Ctrl+Alt+B); footer options contextual to the selected task; empty-state footer shows only sensible actions; task detail adapts to terminal height (modal title dropped); **f** toggles fullscreen (gated on terminal size), **w** toggles output wrap.
 - **`--agent` flag** removed from `/bg` (stale).
 - **Lazy module loader simplified.**
-- **Dependencies** — pi `^1.3.0`, TypeScript `^7.0.2`, `@types/node ^26.6.5`, tsx `^4.23.15`, typebox `^1.4.1`; peer ranges broadened to `|| ^1.0.0` (installs on pi 1.x, still accepts 0.81.1–0.84.0).
+- **Dependencies** — pi `^1.3.0`, TypeScript `^7.0.2`, `@types/node ^26.6.5`, tsx `^4.23.15`, typebox `^1.4.2`; peer ranges broadened to `|| ^1.0.0` (installs on pi 1.x, still accepts 0.81.1–0.84.0).
 - **biome** lint/format + `tsconfig.json` for `tsc --noEmit`.
 
 ## Upstream since the fork base (2.6.9 → 2.6.10)
@@ -51,7 +51,7 @@ Checked 2026-10-17. All 4 commits are about one new subsystem, **host-api**: an 
 | `7781fe3` | land host-api: `host-api.ts`, `host-protocol.ts`, `host-results.ts`, docs, tests | No |
 | `1857b3c` | test(host-api): freeze background UI contract and terminal guard | No |
 | `9923a95` | test(host-api): correct passing group count label | No |
-| `799182f` | chore(release): bump version to 2.6.10 | n/a (this fork uses 0.1.x versioning) |
+| `799182f` | chore(release): bump version to 2.6.10 | n/a (this fork uses its own 0.x versioning) |
 
 ## Re-checking the divergence
 
