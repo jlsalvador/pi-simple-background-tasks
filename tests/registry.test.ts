@@ -11,7 +11,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -143,4 +143,10 @@ test('detachment across a real parent exit, then adoption, external kill and del
   // 3: everything terminal on disk -> nothing left to adopt.
   const nextGeneration = makeRegistry(dir);
   assert.equal(await nextGeneration.registry.reconcileTasksFromDisk(), 0);
+
+  // 4: cleanup removes records together with their owner artifacts
+  // (.exit marker, runner script): no file survives, run dirs are pruned.
+  const summary = await registry.cleanupFinishedTasks('all');
+  assert.ok(summary.deleted.length >= 2, JSON.stringify(summary));
+  assert.equal(readdirSync(dir).length, 0, 'run dirs survived cleanup');
 });

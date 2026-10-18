@@ -1,6 +1,7 @@
 import { readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { TERMINAL_TASK_STATUS_VALUES } from './common.js';
+import { EXIT_MARKER_SUFFIX, RUNNER_SCRIPT_SUFFIX } from './detached-spawn.js';
 
 export type CleanupScope = 'one' | 'session' | 'all';
 
@@ -59,6 +60,11 @@ async function readTaskStatus(jsonPath: string): Promise<string | undefined> {
 async function deleteTaskFiles(runDir: string, id: string): Promise<void> {
   await rm(join(runDir, `${id}.json`), { force: true });
   await rm(join(runDir, `${id}.output`), { force: true });
+  // Ownership artifacts of a settled task: the wrapper marker and the
+  // generated runner script. Both are dead weight once the record is
+  // terminal, and they keep the run dir from ever becoming prunable.
+  await rm(join(runDir, `${id}${EXIT_MARKER_SUFFIX}`), { force: true });
+  await rm(join(runDir, `${id}${RUNNER_SCRIPT_SUFFIX}`), { force: true });
 }
 
 async function removeEmptyRunDir(runDir: string): Promise<void> {
