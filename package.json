@@ -1,6 +1,6 @@
 {
   "name": "pi-simple-background-tasks",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Durable background shell tasks for Pi. KISS fork of pi-background-tasks.",
   "type": "module",
   "license": "ISC",
