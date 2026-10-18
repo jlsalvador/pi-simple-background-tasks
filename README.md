@@ -15,11 +15,14 @@ A KISS fork of [pi-background-tasks](https://github.com/ismailsaleekh/pi-backgro
 ## Install
 
 ```bash
-# Global install from the git main branch
-pi install git:github.com/jlsalvador/pi-simple-background-tasks@main
+# Default install (npm)
+pi install npm:pi-simple-background-tasks
 
-# Project-local install from git
-pi install git:github.com/jlsalvador/pi-simple-background-tasks@main -l
+# Project-local install (npm)
+pi install -l npm:pi-simple-background-tasks
+
+# Or from the git main branch
+pi install git:github.com/jlsalvador/pi-simple-background-tasks@main
 ```
 
 ## Quick start
