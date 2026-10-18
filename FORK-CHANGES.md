@@ -12,7 +12,7 @@ This package is a **KISS fork** of
 
 ## Divergence summary
 
-Relative to the 2.6.9 source, the fork changes **65 files (34,075 lines removed, 4,562 added)**, ending with **13 source files**:
+Relative to the 2.6.9 source, the fork changes **70 files (34,214 lines removed, 5,353 added)**, ending with **14 source files** plus a 4-file platform-verification harness:
 
 | Subsystem (as in 2.6.9) | Fork |
 | --- | --- |
@@ -32,7 +32,11 @@ Relative to the 2.6.9 source, the fork changes **65 files (34,075 lines removed,
 
 ## What the fork adds / changes
 
-- **Single detached task path, survival without flags** — every task spawns fully detached (own POSIX process group, no pipes, no in-process ownership); its ownership facts (pid, pgid, wrapper-written `<id>.exit` marker) live in the on-disk metadata. Each activation adopts still-running records from disk; a same-process `/reload` or a full Pi restart never kills a running task, and a Pi session shutdown kills it deliberately. Upstream's `reload-shell-owner` lease/handoff protocol (`--survive-reload`) was removed along with its ~1.5k lines: there is exactly one launch path and nothing to negotiate per task.
+- **Single detached task path, survival without flags** — every task spawns fully detached: on POSIX in its own process group (no pipes, no in-process ownership); on Windows as an outer process created **by the WMI service** (`Win32_Process.Create`), because direct children of the Pi process — no matter how detached — die together with it through job/console-session teardown (reproduced on a real Windows 11 VM with `taskkill /F` on the Pi process; WMI-created processes survive it). Ownership facts (pid, pgid, wrapper-written `<id>.exit` marker) live in the on-disk metadata and the extension holds no output file descriptors: the spawned command itself redirects output and the wrapper records the exit code. Each activation adopts still-running records from disk; a same-process `/reload` or a full Pi restart never kills a running task, and a Pi session shutdown kills it deliberately. Upstream's `reload-shell-owner` lease/handoff protocol (`--survive-reload`) was removed along with its ~1.5k lines: there is exactly one launch path and nothing to negotiate per task.
+
+- **One Windows kill: `taskkill /T /F`** — the old two-phase ladder (graceful `taskkill /T` window-close termination, then `/F` escalation after a grace timer) is gone: console applications do not honor window-close termination, so the graceful phase could neither stop anything on Windows nor leave time to escalate during a session shutdown (the Pi process would exit first and the un-ref'd escalation timer would die with it). One forced tree kill, outcome checked once. Cap/timeout notices are appended after the tree is terminated because the child's own `1>` redirection holds the output file locked until then.
+
+- **Platform verification harness** (`harness/`) — `harness/posix-matrix.ts` and `harness/win-matrix.ts` drive the registry directly on each platform: completion/exit markers, quoting, timeout and cap kills, detachment across a genuine parent exit, adoption of a dead activation's records, kill of adopted tasks with notification, and no-adoption of terminal records. All checks pass on Linux and on a real Windows 11 VM.
 
 - **`/clean` command + `bg_clean` tool** — delete finished tasks (`session` / `all` / `<id>`). New file `src/core/task-cleanup.ts`; empty run directories are removed after cleanup (tasks live under `~/.pi/agent/tasks`).
 - **Task runtime moved to `~/.pi/agent/tasks`** with the PI extension-config pattern (`pi-background-tasks.json`, `tasksDir`).

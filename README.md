@@ -10,7 +10,7 @@ A KISS fork of [pi-background-tasks](https://github.com/ismailsaleekh/pi-backgro
 - **Durable tasks**: task state is persisted under `~/.pi/agent/tasks`, and every task spawns detached, so a same-process `/reload` or a full Pi restart never kills a running task — the next activation adopts it from disk.
 - **Deliberate lifecycle**: a Pi session shutdown kills running tasks by design; `/reload`, crashes and restarts never do.
 - **Task manager overlay**: a TUI panel lists running and recent tasks with status and bounded output (default **Shift↓**); **f** toggles fullscreen, **w** wraps long output lines.
-- **Cross-platform**: POSIX shell and Windows (process-group kill).
+- **Cross-platform**: POSIX (own process group, `-pgid` kill authority) and Windows (detached via a WMI-created outer process, `taskkill /T /F` tree ownership, `cmd`-runner exit markers).
 
 ## Install
 
