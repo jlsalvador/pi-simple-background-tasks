@@ -51,7 +51,7 @@ pi install git:github.com/jlsalvador/pi-simple-background-tasks@main
 
 | Tool | Purpose |
 | --- | --- |
-| `bg_run` | Start a background shell command and return a task id plus output path. Optional `maxOutputBytes` overrides the configured output-file cap for that task. |
+| `bg_run` | Start a background shell command and return a task id plus output path. |
 | `bg_status` | Inspect one task, or list running and recent tasks. |
 | `bg_logs` | Read bounded output from a task. |
 | `bg_kill` | Stop a running task. |
@@ -61,7 +61,7 @@ pi install git:github.com/jlsalvador/pi-simple-background-tasks@main
 
 | Command | Purpose |
 | --- | --- |
-| `/bg [--name "name"] [--max-output <bytes>] <command>` | Start a tracked shell command. |
+| `/bg [--name "name"] <command>` | Start a tracked shell command. |
 | `/jobs` | List running and recent tasks. |
 | `/tasks [id]` | Open the task manager overlay. |
 | `/logs <id> [maxBytes]` | Show bounded output from a task. |
@@ -82,19 +82,16 @@ Configuration follows the PI extension-config pattern. Create `pi-background-tas
 | Key | Type | Default |
 | --- | --- | --- |
 | `tasksDir` | string path | `~/.pi/agent/tasks` |
-| `maxOutputBytes` | number (bytes) | `104857600` (100 MiB) |
 
-`maxOutputBytes` caps each task's output file: the task is killed with an
-`Output exceeded cap` error once it exceeds it. A single task can raise or lower
-the cap for itself with the `maxOutputBytes` argument of `bg_run` or with
-`/bg --max-output <bytes>`; the per-task value wins over the config one.
+There is no output-file size cap: the complete output is always kept on disk at
+the task output path, and `bg_logs` returns a bounded sample (capped at 50 KiB)
+while the full file stays readable.
 
 Example:
 
 ```json
 {
-  "tasksDir": "~/my-tasks",
-  "maxOutputBytes": 209715200
+  "tasksDir": "~/my-tasks"
 }
 ```
 

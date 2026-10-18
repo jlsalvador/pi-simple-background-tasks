@@ -8,7 +8,7 @@ export const TERMINAL_TASK_STATUS_VALUES = ['completed', 'failed', 'killed'] as 
 
 export type TaskStatus = (typeof TASK_STATUS_VALUES)[number];
 export type TerminalTaskStatus = (typeof TERMINAL_TASK_STATUS_VALUES)[number];
-export type KillKind = 'user' | 'timeout' | 'output_cap' | 'shutdown';
+export type KillKind = 'user' | 'timeout' | 'shutdown';
 
 export type TerminalPublicationState = 'pending' | 'delivered' | 'abandoned';
 export type TerminalPublicationAbandonReason =
@@ -38,8 +38,6 @@ export interface BgTaskSnapshot {
   notifyOnCompletion: boolean;
   triggerOnCompletion: boolean;
   timeoutSeconds?: number | undefined;
-  /** Per-task output-file cap in bytes; unset falls back to the extension config. */
-  maxOutputBytes?: number | undefined;
   /** Immutable non-secret shell selection for ordinary shell tasks. */
   shellPolicy?: ShellPolicySnapshot | undefined;
 }
@@ -65,7 +63,6 @@ export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   killKind?: KillKind | undefined;
   killSignalSent?: boolean | undefined;
   killEscalationTimer?: NodeJS.Timeout | undefined;
-  capExceeded?: boolean | undefined;
   finalized?: boolean | undefined;
   /** True only after the terminal EventBus emitter returns successfully; abandonment is never delivery. */
   terminalPublished: boolean;
@@ -167,7 +164,6 @@ export interface StartTaskOptions {
   name?: string | undefined;
   description?: string | undefined;
   timeoutSeconds?: number | undefined;
-  maxOutputBytes?: number | undefined;
   notifyOnCompletion?: boolean | undefined;
   triggerOnCompletion?: boolean | undefined;
   /** @internal EventBus protocol barrier; callers should not set this outside the extension service. */
@@ -176,8 +172,6 @@ export interface StartTaskOptions {
 
 export const DEFAULT_LOG_BYTES = Math.min(DEFAULT_MAX_BYTES, 50 * 1024);
 export const MAX_LOG_BYTES = Math.min(DEFAULT_MAX_BYTES, 50 * 1024);
-/** Output-file cap used when neither the extension config nor the task sets one. */
-export const DEFAULT_MAX_OUTPUT_BYTES = 100 * 1024 * 1024;
 export const COMMAND_PREVIEW_CHARS = 90;
 
 export function sanitizePathSegment(value: string): string {
@@ -280,20 +274,10 @@ function parseNameValueAndRest(valueAndRest: string): { value: string; rest: str
 
 export function parseBgCommandArgs(args: string): {
   name?: string;
-  maxOutputBytes?: number;
   command: string;
 } {
   let input = args.trim();
   let name: string | undefined;
-  let maxOutputBytes: number | undefined;
-
-  const parseCap = (value: string, flag: string): number => {
-    const parsed = Number(value);
-    if (!Number.isInteger(parsed) || parsed <= 0) {
-      throw new Error(`${flag} must be a positive integer (bytes)`);
-    }
-    return parsed;
-  };
 
   while (input) {
     let consumed = false;
@@ -318,28 +302,6 @@ export function parseBgCommandArgs(args: string): {
         consumed = true;
         break;
       }
-    }
-    if (consumed) continue;
-
-    if (input.startsWith('--max-output=')) {
-      const parsed = parseNameValueAndRest(input.slice('--max-output='.length));
-      if (!parsed) throw new Error('--max-output requires a byte count');
-      maxOutputBytes = parseCap(parsed.value, '--max-output');
-      input = parsed.rest;
-      consumed = true;
-    }
-    if (consumed) continue;
-
-    if (
-      input === '--max-output' ||
-      input.startsWith('--max-output ') ||
-      input.startsWith('--max-output\t')
-    ) {
-      const parsed = parseNameValueAndRest(input.slice('--max-output'.length));
-      if (!parsed) throw new Error('--max-output requires a byte count');
-      maxOutputBytes = parseCap(parsed.value, '--max-output');
-      input = parsed.rest;
-      consumed = true;
     }
     if (consumed) continue;
 
@@ -374,11 +336,10 @@ export function parseBgCommandArgs(args: string): {
     break;
   }
 
-  const parsed: { name?: string; maxOutputBytes?: number; command: string } = {
+  const parsed: { name?: string; command: string } = {
     command: input,
   };
   if (name) parsed.name = name;
-  if (maxOutputBytes !== undefined) parsed.maxOutputBytes = maxOutputBytes;
   return parsed;
 }
 
@@ -719,7 +680,6 @@ export function snapshot(task: BgTask): BgTaskSnapshot {
     notifyOnCompletion: task.notifyOnCompletion,
     triggerOnCompletion: task.triggerOnCompletion,
     timeoutSeconds: task.timeoutSeconds,
-    maxOutputBytes: task.maxOutputBytes,
     shellPolicy: task.shellPolicy,
   };
 }

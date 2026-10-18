@@ -8,7 +8,6 @@ import {
   type BgTask,
   type BgTaskSnapshot,
   boundedRead,
-  DEFAULT_MAX_OUTPUT_BYTES,
   deriveTaskNameFromCommand,
   escapeXml,
   formatDuration,
@@ -46,7 +45,7 @@ export const STOP_WAIT_MS = KILL_GRACE_MS + 1500;
 export const MAX_RECENT_TASKS = 100;
 export const TERMINAL_PUBLICATION_MAX_ATTEMPTS = 3;
 export const TERMINAL_PUBLICATION_RETRY_MS = 100;
-/** One poller for all tasks: markers, byte cap and timeouts are checked here. */
+/** One poller for all tasks: markers and timeouts are checked here. */
 export const TASK_POLL_INTERVAL_MS = 1000;
 const TERMINAL_PUBLICATION_DIAGNOSTIC_CHARS = 500;
 
@@ -112,7 +111,6 @@ export interface BackgroundTaskRegistryOptions {
   tasksDir?: string | undefined;
   makeTaskId?: () => string;
   now?: () => number;
-  maxOutputBytes?: number;
   maxRecentTasks?: number;
   killGraceMs?: number;
   stopWaitMs?: number;
@@ -168,7 +166,6 @@ type PersistedTaskRecord = {
   readonly notifyOnCompletion: boolean;
   readonly triggerOnCompletion: boolean;
   readonly timeoutSeconds?: number | undefined;
-  readonly maxOutputBytes?: number | undefined;
   readonly shellPolicy?: ShellPolicySnapshot | undefined;
 };
 
@@ -192,7 +189,6 @@ export class BackgroundTaskRegistry {
   private readonly shellPolicyEnv: NodeJS.ProcessEnv | undefined;
   private readonly makeTaskIdFn: () => string;
   private readonly now: () => number;
-  private readonly maxOutputBytes: number;
   private readonly maxRecentTasks: number;
   private readonly killGraceMs: number;
   private readonly stopWaitMs: number;
@@ -229,7 +225,6 @@ export class BackgroundTaskRegistry {
       });
     this.makeTaskIdFn = options.makeTaskId ?? defaultTaskId;
     this.now = options.now ?? Date.now;
-    this.maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
     this.maxRecentTasks = options.maxRecentTasks ?? MAX_RECENT_TASKS;
     this.killGraceMs = options.killGraceMs ?? KILL_GRACE_MS;
     this.stopWaitMs = options.stopWaitMs ?? STOP_WAIT_MS;
@@ -360,12 +355,6 @@ export class BackgroundTaskRegistry {
       options.timeoutSeconds > 0
         ? Math.floor(options.timeoutSeconds)
         : undefined;
-    const maxOutputBytes =
-      typeof options.maxOutputBytes === 'number' &&
-      Number.isFinite(options.maxOutputBytes) &&
-      options.maxOutputBytes > 0
-        ? Math.floor(options.maxOutputBytes)
-        : undefined;
     const taskName =
       normalizeTaskName(options.name) ??
       normalizeTaskName(options.description) ??
@@ -393,7 +382,6 @@ export class BackgroundTaskRegistry {
       notifyOnCompletion: options.notifyOnCompletion ?? true,
       triggerOnCompletion: options.triggerOnCompletion ?? false,
       timeoutSeconds,
-      maxOutputBytes,
       terminalPublished: false,
       terminalPublicationState: 'pending',
       terminalPublishAttempts: 0,
@@ -670,7 +658,6 @@ export class BackgroundTaskRegistry {
       notifyOnCompletion: record.notifyOnCompletion !== false,
       triggerOnCompletion: record.triggerOnCompletion === true,
       timeoutSeconds: typeof record.timeoutSeconds === 'number' ? record.timeoutSeconds : undefined,
-      maxOutputBytes: typeof record.maxOutputBytes === 'number' ? record.maxOutputBytes : undefined,
       terminalPublished: false,
       terminalPublicationState: 'pending',
       terminalPublishAttempts: 0,
@@ -708,9 +695,6 @@ export class BackgroundTaskRegistry {
       return ['failed', null, null, 'Completion marker did not contain a valid exit code'];
     }
     const exitCode = Number(markerValue);
-    if (task.capExceeded === true) {
-      return ['failed', exitCode, null, task.error ?? 'Output cap exceeded'];
-    }
     if (task.killKind === 'user' || task.killKind === 'shutdown') {
       return ['killed', exitCode, null, task.error];
     }
@@ -806,27 +790,6 @@ export class BackgroundTaskRegistry {
       return;
     }
 
-    // 3. cap enforcement on a still-running task; a per-task cap wins over the
-    // registry-wide one and is carried across adoption through the metadata.
-    const cap = task.maxOutputBytes ?? this.maxOutputBytes;
-    if (task.capExceeded !== true && outputSize !== undefined && outputSize > cap) {
-      task.capExceeded = true;
-      task.killKind = 'output_cap';
-      task.error = `Output exceeded cap of ${formatSize(cap)}; terminating task`;
-      const notice = `\n\n[background task error: ${task.error}]\n`;
-      if (this.platform === 'win32') {
-        // The child's own `1>` redirection keeps writing past the append: the
-        // tree must be gone before the notice, or the flood overwrites it.
-        this.startTerminate(task);
-        await this.waitForEnd(task, this.stopWaitMs);
-        await this.appendNotice(task, notice);
-        return;
-      }
-      await this.appendNotice(task, notice);
-      this.startTerminate(task);
-      return;
-    }
-
     // 4. timeout enforcement
     if (
       task.killSignalSent !== true &&
@@ -863,9 +826,6 @@ export class BackgroundTaskRegistry {
   }
 
   private terminalFromKindWithoutMarker(task: BgTask): [TaskStatus, string | undefined] {
-    if (task.capExceeded === true || task.killKind === 'output_cap') {
-      return ['failed', task.error ?? 'Output cap exceeded'];
-    }
     if (task.killKind === 'timeout') {
       return ['failed', task.error ?? 'Timed out'];
     }

@@ -78,7 +78,6 @@ interface BgToolArgumentRecord {
   readonly name?: unknown;
   readonly description?: unknown;
   readonly timeoutSeconds?: unknown;
-  readonly maxOutputBytes?: unknown;
   readonly notifyOnCompletion?: unknown;
   readonly triggerOnCompletion?: unknown;
   /** Legacy argument, silently ignored: survival is now unconditional. */
@@ -100,12 +99,6 @@ const BgRunParams = Type.Object({
   ),
   timeoutSeconds: Type.Optional(
     Type.Number({ description: 'Optional timeout; task is failed and killed when exceeded' }),
-  ),
-  maxOutputBytes: Type.Optional(
-    Type.Number({
-      description:
-        'Output-file cap for this task in bytes, overriding the extension config default. The task is terminated when its output file exceeds it.',
-    }),
   ),
   notifyOnCompletion: Type.Optional(
     Type.Boolean({
@@ -227,7 +220,6 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     },
     shellPolicy,
     tasksDir: config.tasksDir,
-    maxOutputBytes: config.maxOutputBytes,
   });
   const eventService: BackgroundTaskExtensionService = installBackgroundTaskExtensionApi({
     events: pi.events,
@@ -336,7 +328,6 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
         };
         if (task.description !== undefined) rerunOptions.description = task.description;
         if (task.timeoutSeconds !== undefined) rerunOptions.timeoutSeconds = task.timeoutSeconds;
-        if (task.maxOutputBytes !== undefined) rerunOptions.maxOutputBytes = task.maxOutputBytes;
         const rerun = await startTask(ctx, task.command, rerunOptions);
         return rerun;
       },
@@ -436,8 +427,7 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
   });
 
   pi.registerCommand('bg', {
-    description:
-      'Start a tracked shell command: /bg [--name "Task name"] [--max-output <bytes>] <command>',
+    description: 'Start a tracked shell command: /bg [--name "Task name"] <command>',
     handler: async (args, ctx) => {
       try {
         const parsed = parseBgCommandArgs(args);
@@ -446,7 +436,6 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
           triggerOnCompletion: false,
         };
         if (parsed.name !== undefined) taskOptions.name = parsed.name;
-        if (parsed.maxOutputBytes !== undefined) taskOptions.maxOutputBytes = parsed.maxOutputBytes;
         const task = await startTask(ctx, parsed.command, taskOptions);
         ctx.ui.notify(
           `Started ${taskDisplayName(task)} (${task.id})\nOutput: ${task.outputPath}\nCommand: ${task.command}`,
@@ -601,7 +590,7 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
   pi.registerTool<typeof BgRunParams, BgRunDetails>({
     name: 'bg_run',
     label: 'Background Run',
-    description: `Start a named long-running shell command in the background and return immediately with a task ID and output path. By default, completed, failed, or killed terminal state is delivered automatically as <background-task-notification> and starts a follow-up agent turn; do not sleep or poll merely to wait. Output is written to ${config.tasksDir} and model-visible logs are bounded to ${formatSize(MAX_LOG_BYTES)}. The output file itself is capped (maxOutputBytes, config default ${formatSize(config.maxOutputBytes)}) and the task is killed with an error when it exceeds the cap.`,
+    description: `Start a named long-running shell command in the background and return immediately with a task ID and output path. By default, completed, failed, or killed terminal state is delivered automatically as <background-task-notification> and starts a follow-up agent turn; do not sleep or poll merely to wait. The complete output is always written to the task output path under ${config.tasksDir}; bg_logs returns a bounded sample (default ${formatSize(DEFAULT_LOG_BYTES)}, hard-capped at ${formatSize(MAX_LOG_BYTES)}) while the full file stays readable. Do not truncate the command itself (e.g. with '| tail') to bound output size: the output file has no size cap and the full output is kept, and a pipeline's exit code is that of the last stage (tail exits 0), so truncation masks the command's real failures. stderr is merged into the captured output automatically, so appending 2>&1 is unnecessary.`,
     promptSnippet:
       'Start a named long-running shell command; default terminal notification wakes a follow-up turn, so yield instead of polling',
     promptGuidelines: [
@@ -612,7 +601,9 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
       'Treat <background-task-notification> as durable terminal truth. Do not call bg_status to reconfirm it; call bg_logs only when the task output is needed.',
       'Use bg_status/bg_logs only when the user explicitly requests an update, automatic notification or wake-up was deliberately disabled, there is concrete evidence the task is hung, or a terminal notification arrived and output details are needed.',
       'Do not set notifyOnCompletion:false or triggerOnCompletion:false unless intentionally opting out of automatic completion handling.',
-      `If a task may produce large output, set maxOutputBytes beforehand; otherwise the output-file cap (default ${formatSize(config.maxOutputBytes)}) terminates it.`,
+      'The full output is always kept on disk (there is no size cap); read bounded samples with bg_logs.',
+      `Never add '| tail' to the command to limit output: it hides the command's own errors and reports tail's exit code (0) instead of the command's, since a pipeline's exit code is the last stage's.`,
+      `stderr is captured in the same output file as stdout automatically, so a bare command's error output is never lost; there is no need to append '2>&1'.`,
     ],
     parameters: BgRunParams,
     prepareArguments(args): BgRunParamsValue {
@@ -630,8 +621,6 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
       };
       if (typeof input.description === 'string') prepared.description = input.description;
       if (typeof input.timeoutSeconds === 'number') prepared.timeoutSeconds = input.timeoutSeconds;
-      // startTask floors and range-checks the value, exactly like timeoutSeconds.
-      if (typeof input.maxOutputBytes === 'number') prepared.maxOutputBytes = input.maxOutputBytes;
       if (typeof input.notifyOnCompletion === 'boolean')
         prepared.notifyOnCompletion = input.notifyOnCompletion;
       if (typeof input.triggerOnCompletion === 'boolean')
@@ -646,7 +635,6 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
       };
       if (params.description !== undefined) taskOptions.description = params.description;
       if (params.timeoutSeconds !== undefined) taskOptions.timeoutSeconds = params.timeoutSeconds;
-      if (params.maxOutputBytes !== undefined) taskOptions.maxOutputBytes = params.maxOutputBytes;
       const task = await startTask(ctx, params.command, taskOptions);
       const completionDelivery = deriveCompletionDeliveryGuidance(
         task.notifyOnCompletion,

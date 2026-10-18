@@ -15,7 +15,6 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { formatSize } from '@earendil-works/pi-coding-agent';
 import { resolveShellPolicy } from '../src/core/common.js';
 import {
   awaitSettled,
@@ -85,57 +84,25 @@ test('timeout kill terminates the tree and reports "Timed out"', async () => {
   assert.equal(pidAlive(task.pid), false);
 });
 
-// Endless flooder: writes far past any cap used by the suite, so a cap kill is
-// the only thing that can stop it.
+// Endless flooder: writes without bound; with no size cap only a timeout or a kill
+// can stop it, and its output file grows without limit.
 const FLOODER_COMMAND = IS_WIN
   ? 'for /l %%i in (1,1,9999999) do @echo flooder-xxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
   : "sh -c 'while true; do echo flooder-xxxxxxxxxxxxxxxxxxxxxxxxxxxxx; done'";
 
-test('output cap terminates the task and the notice lands in the output', async () => {
-  const { registry } = makeRegistry(dir, { maxOutputBytes: 3000 });
-  const task = await registry.startTask(ctx, FLOODER_COMMAND);
-  const snapshot = await awaitSettled(registry, task, 20_000);
+test('unbounded flood with a timeout terminates the tree and keeps the full output', async () => {
+  const { registry } = makeRegistry(dir);
+  const task = await registry.startTask(ctx, FLOODER_COMMAND, { timeoutSeconds: 2 });
+  const snapshot = await awaitSettled(registry, task, 15_000);
   assert.equal(snapshot.status, 'failed');
-  assert.ok((snapshot.error ?? '').includes('Output exceeded cap'));
-  assert.ok(readFileSync(task.outputAbsPath, 'utf8').includes('Output exceeded cap'));
-});
-
-test('per-task cap above the registry cap survives the registry cap and dies later', async () => {
-  const { registry } = makeRegistry(dir, { maxOutputBytes: 3000 });
-  const task = await registry.startTask(ctx, FLOODER_COMMAND, { maxOutputBytes: 200_000 });
-  const snapshot = await awaitSettled(registry, task, 20_000);
-  assert.equal(snapshot.status, 'failed');
-  // The effective cap is the per-task one, not the 3000-byte registry cap.
-  assert.ok((snapshot.error ?? '').includes(`cap of ${formatSize(200_000)}`), snapshot.error);
-  // It did not die at the 3000-byte registry cap.
-  assert.ok(readFileSync(task.outputAbsPath, 'utf8').length > 150_000);
-});
-
-test('per-task cap below the registry cap kills at the per-task cap', async () => {
-  const { registry } = makeRegistry(dir, { maxOutputBytes: 200_000 });
-  const task = await registry.startTask(ctx, FLOODER_COMMAND, { maxOutputBytes: 3000 });
-  const snapshot = await awaitSettled(registry, task, 20_000);
-  assert.equal(snapshot.status, 'failed');
-  assert.ok((snapshot.error ?? '').includes(`cap of ${formatSize(3000)}`), snapshot.error);
-  assert.ok(readFileSync(task.outputAbsPath, 'utf8').includes('Output exceeded cap'));
-});
-
-test('per-task cap is persisted and survives adoption from disk', async () => {
-  const { registry } = makeRegistry(dir, { maxOutputBytes: 200_000 });
-  const task = await registry.startTask(ctx, sleeperCommand(125, 'capadoptee'), {
-    maxOutputBytes: 5000,
-  });
-  const persisted = JSON.parse(readFileSync(task.metadataAbsPath, 'utf8')) as {
-    maxOutputBytes?: number;
-  };
-  assert.equal(persisted.maxOutputBytes, 5000);
-
-  // A fresh activation adopts the record and keeps the per-task cap.
-  const { registry: next } = makeRegistry(dir, { maxOutputBytes: 200_000 });
-  assert.equal(await next.reconcileTasksFromDisk(), 1);
-  const adoptee = next.resolveTask(task.id);
-  assert.equal(adoptee.maxOutputBytes, 5000);
-  await next.stopTask(adoptee, 'user', 'adoption cap check');
+  assert.ok((snapshot.error ?? '').includes('Timed out after 2s'));
+  if (task.pid === undefined) throw new Error('no pid recorded');
+  assert.equal(pidAlive(task.pid), false);
+  // No size cap: the file accumulates the full output up to the timeout rather than
+  // being cut off; assert it is well past the model-visible log bound.
+  const content = readFileSync(task.outputAbsPath, 'utf8');
+  assert.ok(content.length > 100_000, `expected >100 KB of output, got ${content.length}`);
+  assert.ok(content.includes('flooder-'));
 });
 
 test('windows: runner script nests the command under cmd /s /c', {
