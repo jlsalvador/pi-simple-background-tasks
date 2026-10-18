@@ -37,7 +37,6 @@ import { writeJsonAtomic } from './task-durable.js';
 import {
   runWindowsTaskkill,
   type TaskkillOutcome,
-  type WindowsKillPhase,
   type WindowsTaskkillOptions,
 } from './windows-taskkill.js';
 
@@ -89,8 +88,6 @@ interface PosixProcessGroupKillState {
 }
 
 interface WindowsKillState {
-  softController?: AbortController | undefined;
-  softPromise?: Promise<void> | undefined;
   forcePromise?: Promise<void> | undefined;
   forceFailure?: Error | undefined;
   forceFailureListeners?: Array<(error: Error) => void> | undefined;
@@ -124,11 +121,7 @@ export interface BackgroundTaskRegistryOptions {
 }
 
 export type KillProcessFn = (pid: number, signal?: NodeJS.Signals | number) => boolean;
-export type KillTreeFn = (
-  pid: number,
-  phase: WindowsKillPhase,
-  signal?: AbortSignal,
-) => Promise<TaskkillOutcome>;
+export type KillTreeFn = (pid: number, signal?: AbortSignal) => Promise<TaskkillOutcome>;
 
 export type CompletionNotificationSender = (
   message: CompletionNotificationMessage,
@@ -228,10 +221,10 @@ export class BackgroundTaskRegistry {
     const taskkillEnv = this.env;
     this.killTree =
       options.killTree ??
-      ((pid, phase, signal) => {
+      ((pid, signal) => {
         const taskkillOptions: WindowsTaskkillOptions =
           signal === undefined ? { env: taskkillEnv } : { env: taskkillEnv, signal };
-        return runWindowsTaskkill(pid, phase, taskkillOptions);
+        return runWindowsTaskkill(pid, taskkillOptions);
       });
     this.makeTaskIdFn = options.makeTaskId ?? defaultTaskId;
     this.now = options.now ?? Date.now;
@@ -804,7 +797,15 @@ export class BackgroundTaskRegistry {
       task.capExceeded = true;
       task.killKind = 'output_cap';
       task.error = `Output exceeded cap of ${formatSize(this.maxOutputBytes)}; terminating task`;
-      await this.appendNotice(task, `\n\n[background task error: ${task.error}]\n`);
+      const notice = `\n\n[background task error: ${task.error}]\n`;
+      if (this.platform === 'win32') {
+        // The child's own redirection locks the output file until the tree is
+        // gone, so termination must release it before the notice can land.
+        this.startTerminate(task);
+        await this.appendNotice(task, notice);
+        return;
+      }
+      await this.appendNotice(task, notice);
       this.startTerminate(task);
       return;
     }
@@ -817,7 +818,13 @@ export class BackgroundTaskRegistry {
     ) {
       task.killKind = 'timeout';
       task.error = `Timed out after ${String(task.timeoutSeconds)}s`;
-      await this.appendNotice(task, `\n[background task timeout: ${task.error}]\n`);
+      const notice = `\n[background task timeout: ${task.error}]\n`;
+      if (this.platform === 'win32') {
+        this.startTerminate(task);
+        await this.appendNotice(task, notice);
+        return;
+      }
+      await this.appendNotice(task, notice);
       this.startTerminate(task);
       return;
     }
@@ -858,14 +865,30 @@ export class BackgroundTaskRegistry {
   /** Persist an internally generated notice (spawn/timeout/cap) verbatim. */
   private async appendNotice(task: BgTask, text: string): Promise<void> {
     if (!text) return;
-    try {
-      await appendFile(task.outputAbsPath, text, 'utf8');
-      task.bytesWritten += Buffer.byteLength(text, 'utf8');
-    } catch (error) {
-      this.logger.error(
-        `[background-tasks] failed to append notice for ${task.id}:`,
-        error instanceof Error ? error : new Error(String(error)),
-      );
+    // On Windows the child's own `1>` redirection holds the output file with a
+    // lock that rejects a concurrent append until the tree is gone; a bounded
+    // retry lets the notice land after the termination release.
+    const attempts = this.platform === 'win32' ? 6 : 1;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        await appendFile(task.outputAbsPath, text, 'utf8');
+        task.bytesWritten += Buffer.byteLength(text, 'utf8');
+        return;
+      } catch (error) {
+        const busy =
+          this.platform === 'win32' &&
+          error instanceof Error &&
+          'code' in error &&
+          (error as NodeJS.ErrnoException).code === 'EBUSY';
+        if (!busy || attempt === attempts) {
+          this.logger.error(
+            `[background-tasks] failed to append notice for ${task.id}:`,
+            error instanceof Error ? error : new Error(String(error)),
+          );
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 400).unref?.());
+      }
     }
   }
 
@@ -1239,23 +1262,9 @@ export class BackgroundTaskRegistry {
     );
   }
 
-  private recordWindowsSoftFailure(task: BgTask, pid: number, detail: string): void {
-    const message =
-      `Windows taskkill /T logical termination request failed for task ${task.id} pid ${String(pid)}: ` +
-      `${detail}; force escalation remains scheduled`;
-    task.error = BackgroundTaskRegistry.appendTaskError(task.error, message);
-    this.recordWindowsTaskkillNotice(task, message);
-    void this.writeMetadata(task).catch((metadataError: unknown) => {
-      this.logger.error(
-        `[background-tasks] failed to write Windows taskkill soft-failure metadata for ${task.id}:`,
-        metadataError,
-      );
-    });
-  }
-
   private makeWindowsForceFailure(task: BgTask, pid: number, detail: string): Error {
     return new Error(
-      `Windows taskkill /T /F force termination failed for task ${task.id} pid ${String(pid)}: ${detail}. Descendant processes may have leaked.`,
+      `Windows taskkill /T /F tree termination failed for task ${task.id} pid ${String(pid)}: ${detail}. Descendant processes may have leaked.`,
     );
   }
 
@@ -1280,76 +1289,30 @@ export class BackgroundTaskRegistry {
   private evaluateWindowsTaskkillOutcome(
     task: BgTask,
     pid: number,
-    phase: WindowsKillPhase,
     outcome: TaskkillOutcome,
   ): Error | undefined {
     if (outcome.exitCode === 0) return undefined;
     const detail = BackgroundTaskRegistry.describeTaskkillOutcome(outcome);
-    if (outcome.exitCode === 128) {
-      this.recordWindowsTaskkillNotice(
-        task,
-        `taskkill ${phase} reported process not found for pid ${String(pid)} (${detail}); treating as an already-exited race`,
-      );
-      return undefined;
-    }
     if (this.isWindowsTaskkillTerminalRace(task)) {
       this.recordWindowsTaskkillNotice(
         task,
-        `taskkill ${phase} finished after the task became terminal for pid ${String(pid)} (${detail}); treating as a terminal race`,
+        `taskkill finished after the task became terminal for pid ${String(pid)} (${detail}); treating as a terminal race`,
       );
       return undefined;
     }
-    if (phase === 'terminate') {
-      this.recordWindowsSoftFailure(task, pid, detail);
+    if (outcome.exitCode === 128) {
+      // With a single force kill, 128 means taskkill could not find the tree:
+      // an already-exited race.
+      this.recordWindowsTaskkillNotice(
+        task,
+        `taskkill reported process not found for pid ${String(pid)} (${detail}); treating as an already-exited race`,
+      );
       return undefined;
     }
     return this.makeWindowsForceFailure(task, pid, detail);
   }
 
-  private handleWindowsSoftException(
-    task: BgTask,
-    pid: number,
-    error: unknown,
-    state: WindowsKillState,
-  ): void {
-    const message = BackgroundTaskRegistry.errorMessage(error);
-    if (state.forcePromise !== undefined || this.isWindowsTaskkillTerminalRace(task)) return;
-    this.recordWindowsSoftFailure(task, pid, message);
-  }
-
-  private startWindowsSoftKill(task: BgTask, pid: number): Promise<void> {
-    const state = this.getWindowsKillState(task);
-    if (state.softPromise !== undefined) return state.softPromise;
-    const controller = new AbortController();
-    state.softController = controller;
-
-    let launched: Promise<TaskkillOutcome>;
-    try {
-      launched = this.killTree(pid, 'terminate', controller.signal);
-    } catch (error) {
-      delete state.softController;
-      throw new Error(
-        `Could not kill task ${task.id}: Windows taskkill /T failed to start: ${BackgroundTaskRegistry.errorMessage(error)}`,
-      );
-    }
-
-    const promise = launched
-      .then((outcome) => {
-        if (state.forcePromise !== undefined || this.isWindowsTaskkillTerminalRace(task)) return;
-        const failure = this.evaluateWindowsTaskkillOutcome(task, pid, 'terminate', outcome);
-        if (failure !== undefined) throw failure;
-      })
-      .catch((error: unknown) => {
-        this.handleWindowsSoftException(task, pid, error, state);
-      })
-      .finally(() => {
-        if (state.softController === controller) delete state.softController;
-      });
-    state.softPromise = promise;
-    return promise;
-  }
-
-  private startWindowsForceKill(task: BgTask, pid: number): Promise<void> {
+  private startWindowsTaskkill(task: BgTask, pid: number): Promise<void> {
     const state = this.getWindowsKillState(task);
     if (state.forcePromise !== undefined) return state.forcePromise;
 
@@ -1367,19 +1330,23 @@ export class BackgroundTaskRegistry {
     state.forcePromise = forcePromise;
     void forcePromise.catch((error: unknown) => {
       this.logger.error(
-        `[background-tasks] Windows force tree termination failed for ${task.id}:`,
+        `[background-tasks] Windows tree termination failed for ${task.id}:`,
         error,
       );
     });
 
     this.clearKillEscalationTimer(task);
-    if (state.softController !== undefined && !state.softController.signal.aborted) {
-      state.softController.abort();
-    }
+
+    const afterTreeStop = (): void => {
+      // Terminalize without waiting for the next poll tick.
+      if (task.status === 'running' && task.finalized !== true) {
+        void this.pollTask(task);
+      }
+    };
 
     let launched: Promise<TaskkillOutcome>;
     try {
-      launched = this.killTree(pid, 'force');
+      launched = this.killTree(pid);
     } catch (error) {
       const failure = this.makeWindowsForceFailure(
         task,
@@ -1394,19 +1361,20 @@ export class BackgroundTaskRegistry {
 
     launched.then(
       (outcome) => {
-        const failure = this.evaluateWindowsTaskkillOutcome(task, pid, 'force', outcome);
+        const failure = this.evaluateWindowsTaskkillOutcome(task, pid, outcome);
         if (failure !== undefined) {
           this.recordWindowsForceFailure(task, failure);
           rejectForceReady(failure);
           return;
         }
         resolveForceReady();
+        afterTreeStop();
       },
       (error: unknown) => {
         if (this.isWindowsTaskkillTerminalRace(task)) {
           this.recordWindowsTaskkillNotice(
             task,
-            `taskkill force rejected after the task became terminal for pid ${String(pid)} (${BackgroundTaskRegistry.errorMessage(error)}); treating as a terminal race`,
+            `taskkill rejected after the task became terminal for pid ${String(pid)} (${BackgroundTaskRegistry.errorMessage(error)}); treating as a terminal race`,
           );
           resolveForceReady();
           return;
@@ -1424,45 +1392,19 @@ export class BackgroundTaskRegistry {
     return forcePromise;
   }
 
-  private requestWindowsKill(task: BgTask, pid: number, signal: NodeJS.Signals): void {
-    if (signal === 'SIGKILL') {
-      this.startWindowsForceKill(task, pid);
-      task.killSignalSent = true;
-      return;
-    }
-
-    this.startWindowsSoftKill(task, pid);
-    task.killSignalSent = true;
-    if (task.killEscalationTimer !== undefined) return;
-    task.killEscalationTimer = setTimeout(() => {
-      task.killEscalationTimer = undefined;
-      if (task.status !== 'running') return;
-      try {
-        this.requestKill(task, 'SIGKILL');
-      } catch (error) {
-        task.error = BackgroundTaskRegistry.appendTaskError(
-          task.error,
-          `SIGKILL failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-        void this.writeMetadata(task).catch((metadataError: unknown) => {
-          this.logger.error(
-            `[background-tasks] failed to write metadata for ${task.id}:`,
-            metadataError,
-          );
-        });
-      }
-    }, this.killGraceMs).unref();
-  }
-
   private requestKill(task: BgTask, signal: NodeJS.Signals = 'SIGTERM'): void {
     if (task.status !== 'running') {
       throw new Error(`Task ${task.id} is ${task.status}, not running`);
     }
-    if (task.killSignalSent && signal === 'SIGTERM') return;
+    if (task.killSignalSent) return;
 
     if (this.platform === 'win32') {
       if (!task.pid) throw new Error(`Task ${task.id} has no process id`);
-      this.requestWindowsKill(task, task.pid, signal);
+      // One Windows kill: `taskkill /T /F`. Console applications do not honor
+      // window-close termination, so there is nothing for a graceful phase to
+      // contain and no escalation ladder to arm.
+      task.killSignalSent = true;
+      this.startWindowsTaskkill(task, task.pid);
       return;
     }
 

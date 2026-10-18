@@ -1,8 +1,6 @@
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process';
 import { win32 } from 'node:path';
 
-export type WindowsKillPhase = 'terminate' | 'force';
-
 export interface TaskkillOutcome {
   readonly exitCode: number | null;
   readonly signal: NodeJS.Signals | null;
@@ -117,11 +115,7 @@ function validatePid(pid: number): void {
   }
 }
 
-function validatePhase(phase: WindowsKillPhase): void {
-  if (phase !== 'terminate' && phase !== 'force') {
-    throw new Error(`Invalid Windows taskkill phase ${String(phase)}`);
-  }
-}
+// (the two-phase 'terminate'/'force' split was removed: /F is the only kill)
 
 function positiveFiniteInteger(value: number | undefined, fallback: number, label: string): number {
   const candidate = value ?? fallback;
@@ -157,11 +151,9 @@ function defaultSpawn(
 
 export function runWindowsTaskkill(
   pid: number,
-  phase: WindowsKillPhase,
   options: WindowsTaskkillOptions = {},
 ): Promise<TaskkillOutcome> {
   validatePid(pid);
-  validatePhase(phase);
   const env = options.env ?? process.env;
   const taskkill = resolveTaskkillPath(env);
   const timeoutMs = positiveFiniteInteger(options.timeoutMs, DEFAULT_TIMEOUT_MS, 'timeoutMs');
@@ -173,8 +165,9 @@ export function runWindowsTaskkill(
   const spawn = options.spawn ?? defaultSpawn;
   const abortSignal = options.signal;
 
-  const args = ['/PID', String(pid), '/T'];
-  if (phase === 'force') args.push('/F');
+  // Single tree termination: console applications do not honor window-close
+  // termination, so forced termination is the only kill that works.
+  const args = ['/PID', String(pid), '/T', '/F'];
 
   if (abortSignal?.aborted) {
     const stdout = new BoundedCapture(maxCaptureBytes);
