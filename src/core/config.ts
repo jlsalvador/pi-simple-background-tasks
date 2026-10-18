@@ -2,16 +2,19 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { CONFIG_DIR_NAME, getAgentDir } from '@earendil-works/pi-coding-agent';
+import { DEFAULT_MAX_OUTPUT_BYTES } from './common.js';
 
 /** Config file name this extension reads, following the PI extension-config pattern. */
 export const PI_BG_CONFIG_FILE_NAME = 'pi-background-tasks.json';
 
 export interface PiBackgroundConfig {
   readonly tasksDir: string;
+  readonly maxOutputBytes: number;
 }
 
 interface BackgroundTasksConfigFile {
   readonly tasksDir?: string;
+  readonly maxOutputBytes?: number;
 }
 
 /** Default tasks directory: the PI agent directory plus `tasks`. */
@@ -45,10 +48,19 @@ function readConfigFile(file: string): BackgroundTasksConfigFile | undefined {
     );
   }
   if (!isRecord(parsed)) configError(file, 'must contain a JSON object');
-  const unknown = Object.keys(parsed).filter((key) => key !== 'tasksDir');
+  const unknown = Object.keys(parsed).filter(
+    (key) => key !== 'tasksDir' && key !== 'maxOutputBytes',
+  );
   if (unknown.length > 0) configError(file, `contains unknown keys: ${unknown.join(', ')}`);
   if (parsed.tasksDir !== undefined && typeof parsed.tasksDir !== 'string')
     configError(file, 'has a non-string tasksDir');
+  if (
+    parsed.maxOutputBytes !== undefined &&
+    (typeof parsed.maxOutputBytes !== 'number' ||
+      !Number.isInteger(parsed.maxOutputBytes) ||
+      parsed.maxOutputBytes <= 0)
+  )
+    configError(file, 'has a non-positive-integer maxOutputBytes');
   return parsed as BackgroundTasksConfigFile;
 }
 
@@ -72,12 +84,15 @@ export function resolveBackgroundTasksConfig(
     { file: join(cwd, CONFIG_DIR_NAME, PI_BG_CONFIG_FILE_NAME), dir: cwd },
   ];
   let tasksDir: string | undefined;
+  let maxOutputBytes: number | undefined;
   for (const { file, dir } of files) {
     const parsed = readConfigFile(file);
     if (parsed === undefined) continue;
     if (parsed.tasksDir !== undefined) tasksDir = resolveTasksDir(parsed.tasksDir, dir);
+    if (parsed.maxOutputBytes !== undefined) maxOutputBytes = parsed.maxOutputBytes;
   }
   return Object.freeze({
     tasksDir: tasksDir ?? defaultTasksDir(agentDir),
+    maxOutputBytes: maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
   });
 }

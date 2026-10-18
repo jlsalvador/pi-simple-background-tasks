@@ -8,6 +8,7 @@ import {
   type BgTask,
   type BgTaskSnapshot,
   boundedRead,
+  DEFAULT_MAX_OUTPUT_BYTES,
   deriveTaskNameFromCommand,
   escapeXml,
   formatDuration,
@@ -40,7 +41,6 @@ import {
   type WindowsTaskkillOptions,
 } from './windows-taskkill.js';
 
-export const MAX_OUTPUT_BYTES = Number(process.env.PI_BG_MAX_OUTPUT_BYTES ?? 20 * 1024 * 1024);
 export const KILL_GRACE_MS = 3000;
 export const STOP_WAIT_MS = KILL_GRACE_MS + 1500;
 export const MAX_RECENT_TASKS = 100;
@@ -168,6 +168,7 @@ type PersistedTaskRecord = {
   readonly notifyOnCompletion: boolean;
   readonly triggerOnCompletion: boolean;
   readonly timeoutSeconds?: number | undefined;
+  readonly maxOutputBytes?: number | undefined;
   readonly shellPolicy?: ShellPolicySnapshot | undefined;
 };
 
@@ -228,7 +229,7 @@ export class BackgroundTaskRegistry {
       });
     this.makeTaskIdFn = options.makeTaskId ?? defaultTaskId;
     this.now = options.now ?? Date.now;
-    this.maxOutputBytes = options.maxOutputBytes ?? MAX_OUTPUT_BYTES;
+    this.maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
     this.maxRecentTasks = options.maxRecentTasks ?? MAX_RECENT_TASKS;
     this.killGraceMs = options.killGraceMs ?? KILL_GRACE_MS;
     this.stopWaitMs = options.stopWaitMs ?? STOP_WAIT_MS;
@@ -359,6 +360,12 @@ export class BackgroundTaskRegistry {
       options.timeoutSeconds > 0
         ? Math.floor(options.timeoutSeconds)
         : undefined;
+    const maxOutputBytes =
+      typeof options.maxOutputBytes === 'number' &&
+      Number.isFinite(options.maxOutputBytes) &&
+      options.maxOutputBytes > 0
+        ? Math.floor(options.maxOutputBytes)
+        : undefined;
     const taskName =
       normalizeTaskName(options.name) ??
       normalizeTaskName(options.description) ??
@@ -386,6 +393,7 @@ export class BackgroundTaskRegistry {
       notifyOnCompletion: options.notifyOnCompletion ?? true,
       triggerOnCompletion: options.triggerOnCompletion ?? false,
       timeoutSeconds,
+      maxOutputBytes,
       terminalPublished: false,
       terminalPublicationState: 'pending',
       terminalPublishAttempts: 0,
@@ -662,6 +670,7 @@ export class BackgroundTaskRegistry {
       notifyOnCompletion: record.notifyOnCompletion !== false,
       triggerOnCompletion: record.triggerOnCompletion === true,
       timeoutSeconds: typeof record.timeoutSeconds === 'number' ? record.timeoutSeconds : undefined,
+      maxOutputBytes: typeof record.maxOutputBytes === 'number' ? record.maxOutputBytes : undefined,
       terminalPublished: false,
       terminalPublicationState: 'pending',
       terminalPublishAttempts: 0,
@@ -797,11 +806,13 @@ export class BackgroundTaskRegistry {
       return;
     }
 
-    // 3. cap enforcement on a still-running task
-    if (task.capExceeded !== true && outputSize !== undefined && outputSize > this.maxOutputBytes) {
+    // 3. cap enforcement on a still-running task; a per-task cap wins over the
+    // registry-wide one and is carried across adoption through the metadata.
+    const cap = task.maxOutputBytes ?? this.maxOutputBytes;
+    if (task.capExceeded !== true && outputSize !== undefined && outputSize > cap) {
       task.capExceeded = true;
       task.killKind = 'output_cap';
-      task.error = `Output exceeded cap of ${formatSize(this.maxOutputBytes)}; terminating task`;
+      task.error = `Output exceeded cap of ${formatSize(cap)}; terminating task`;
       const notice = `\n\n[background task error: ${task.error}]\n`;
       if (this.platform === 'win32') {
         // The child's own `1>` redirection keeps writing past the append: the
