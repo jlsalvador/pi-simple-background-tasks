@@ -7,9 +7,9 @@ A KISS fork of [pi-background-tasks](https://github.com/ismailsaleekh/pi-backgro
 ## Features
 
 - **Run long jobs without blocking**: start a named shell command in the background, keep talking to Pi, and get a completion notification in chat when it finishes.
-- **Durable tasks**: task state is persisted under `~/.pi/agent/tasks`, so it survives session restarts.
+- **Durable tasks**: task state is persisted under `~/.pi/agent/tasks`, and every task spawns detached, so a same-process `/reload` or a full Pi restart never kills a running task — the next activation adopts it from disk.
+- **Deliberate lifecycle**: a Pi session shutdown kills running tasks by design; `/reload`, crashes and restarts never do.
 - **Task manager overlay**: a TUI panel lists running and recent tasks with status and bounded output (default **Shift↓**); **f** toggles fullscreen, **w** wraps long output lines.
-- **Survive Pi reloads**: opt in to keeping a shell task alive across a same-process `/reload`.
 - **Cross-platform**: POSIX shell and Windows (process-group kill).
 
 ## Install
@@ -33,7 +33,7 @@ pi install git:github.com/jlsalvador/pi-simple-background-tasks@main
    /bg --name "Typecheck watch" npm run typecheck -- --watch
    ```
 
-   `/bg` starts a tracked shell task and returns the task id plus output path. User-launched `/bg` tasks notify in the UI but do not automatically wake a follow-up model turn. Add one leading `--survive-reload` only when the shell process must keep running across a same-process `/reload`.
+   `/bg` starts a tracked shell command and returns the task id plus output path. User-launched `/bg` tasks notify in the UI but do not automatically wake a follow-up model turn. Tasks survive `/reload` and Pi restarts unconditionally; quitting the agent kills them.
 
 2. List tasks or open the task manager:
 
@@ -61,7 +61,7 @@ pi install git:github.com/jlsalvador/pi-simple-background-tasks@main
 
 | Command | Purpose |
 | --- | --- |
-| `/bg [--survive-reload] [--name "name"] <command>` | Start a tracked shell command. |
+| `/bg [--name "name"] <command>` | Start a tracked shell command. |
 | `/jobs` | List running and recent tasks. |
 | `/tasks [id]` | Open the task manager overlay. |
 | `/logs <id> [maxBytes]` | Show bounded output from a task. |

@@ -12,11 +12,12 @@ This package is a **KISS fork** of
 
 ## Divergence summary
 
-Relative to the 2.6.9 source, the fork changes **63 files (31,260 lines removed, 3,704 added)**, ending with **13 source files**:
+Relative to the 2.6.9 source, the fork changes **65 files (34,075 lines removed, 4,562 added)**, ending with **13 source files**:
 
 | Subsystem (as in 2.6.9) | Fork |
 | --- | --- |
-| Background-task core: `registry`, `common`, `extension-api`, `durable-fs`, `task-durable`, `shell-policy`, `windows-taskkill`, `reload-shell-owner`, `ui/background-tasks-manager` | **Kept, simplified** |
+| Background-task core: `registry`, `common`, `extension-api`, `durable-fs`, `task-durable`, `shell-policy`, `windows-taskkill`, `ui/background-tasks-manager` | **Kept, simplified** |
+| `reload-shell-owner` (lease/nonce handoff protocol for reload survival) | **Removed** — replaced by the detached-spawn design below |
 | Fusion workflows (`src/core/fusion/*` + `fusion-extension.ts` + `fusion-child-extension.ts` + `ui/fusion-model-selector.ts`) | **Removed** (~15k lines) |
 | Delegate (`src/core/delegate/*` + `delegate-extension.ts` + `delegate-child-extension.ts`) | **Removed** (~5k lines) |
 | Claude/Anthropic impersonation (`anthropic-attribution*.ts`) | **Removed** (~3.7k lines) |
@@ -30,6 +31,8 @@ Relative to the 2.6.9 source, the fork changes **63 files (31,260 lines removed,
 | `pi-launch.ts`, `canonical-json.ts`, `BACKGROUND-TASKS-INSTRUCTIONS.md` | **Removed** |
 
 ## What the fork adds / changes
+
+- **Single detached task path, survival without flags** — every task spawns fully detached (own POSIX process group, no pipes, no in-process ownership); its ownership facts (pid, pgid, wrapper-written `<id>.exit` marker) live in the on-disk metadata. Each activation adopts still-running records from disk; a same-process `/reload` or a full Pi restart never kills a running task, and a Pi session shutdown kills it deliberately. Upstream's `reload-shell-owner` lease/handoff protocol (`--survive-reload`) was removed along with its ~1.5k lines: there is exactly one launch path and nothing to negotiate per task.
 
 - **`/clean` command + `bg_clean` tool** — delete finished tasks (`session` / `all` / `<id>`). New file `src/core/task-cleanup.ts`; empty run directories are removed after cleanup (tasks live under `~/.pi/agent/tasks`).
 - **Task runtime moved to `~/.pi/agent/tasks`** with the PI extension-config pattern (`pi-background-tasks.json`, `tasksDir`).
