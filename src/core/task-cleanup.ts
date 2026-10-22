@@ -1,4 +1,4 @@
-import { readdir, readFile, rm } from 'node:fs/promises';
+import { readdir, readFile, rm, rmdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { TERMINAL_TASK_STATUS_VALUES } from './common.js';
 import { EXIT_MARKER_SUFFIX, RUNNER_SCRIPT_SUFFIX } from './detached-spawn.js';
@@ -76,7 +76,10 @@ async function removeEmptyRunDir(runDir: string): Promise<void> {
   }
   if (entries.length > 0) return;
   try {
-    await rm(runDir, { recursive: true });
+    // Non-recursive: the kernel re-checks emptiness at delete time, so a run
+    // dir a concurrent startTask just recreated fails ENOTEMPTY and survives
+    // instead of being wiped together with its new task files.
+    await rmdir(runDir);
   } catch {
     // Best effort: a directory that cannot be removed is harmless.
   }

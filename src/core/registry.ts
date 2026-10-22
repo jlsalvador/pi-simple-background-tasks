@@ -318,12 +318,19 @@ export class BackgroundTaskRegistry {
   }
 
   async ensureRuntimeDir(ctx: BackgroundTaskContext): Promise<RuntimeDir> {
-    if (this.runtimeDir) return this.runtimeDir;
-    const sessionId = sanitizePathSegment(ctx.sessionId ?? `session-${String(process.pid)}`);
-    const runId = `${sessionId}-${String(process.pid)}`;
-    const runtimeDirAbs = join(this.tasksDir, runId);
-    await mkdir(runtimeDirAbs, { recursive: true });
-    this.runtimeDir = { abs: runtimeDirAbs, display: runtimeDirAbs };
+    let dir = this.runtimeDir;
+    if (dir === undefined) {
+      const sessionId = sanitizePathSegment(ctx.sessionId ?? `session-${String(process.pid)}`);
+      const runId = `${sessionId}-${String(process.pid)}`;
+      const runtimeDirAbs = join(this.tasksDir, runId);
+      dir = { abs: runtimeDirAbs, display: runtimeDirAbs };
+    }
+    // Cleanup prunes empty run dirs and can remove this process's own dir
+    // while the registry still caches it: the cache is a path, not an
+    // existence guarantee. Always mkdir, which is a no-op when the dir
+    // already exists and recreates it when it was pruned.
+    await mkdir(dir.abs, { recursive: true });
+    this.runtimeDir = dir;
     return this.runtimeDir;
   }
 

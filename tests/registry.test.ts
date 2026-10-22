@@ -159,3 +159,23 @@ test('detachment across a real parent exit, then adoption, external kill and del
   assert.ok(summary.deleted.length >= 2, JSON.stringify(summary));
   assert.equal(readdirSync(dir).length, 0, 'run dirs survived cleanup');
 });
+
+test('cleanup prunes the run dir and the next startTask recreates it', async () => {
+  const { registry } = makeRegistry(dir);
+  const command = IS_WIN ? 'echo post-prune& exit 0' : 'sh -c "echo post-prune; exit 0"';
+  const first = await registry.startTask(ctx, command);
+  const firstSnapshot = await awaitSettled(registry, first);
+  assert.equal(firstSnapshot.status, 'completed');
+
+  // Deleting the last task prunes the now-empty run dir (the design), which
+  // leaves the registry's cached runtimeDir pointing at a deleted path.
+  const summary = await registry.cleanupFinishedTasks('all');
+  assert.equal(summary.deleted.length, 1, JSON.stringify(summary));
+  assert.equal(readdirSync(dir).length, 0, 'run dirs survived cleanup');
+
+  // Regression: startTask must recreate the pruned run dir instead of
+  // failing ENOENT on the metadata temp file.
+  const second = await registry.startTask(ctx, command);
+  const secondSnapshot = await awaitSettled(registry, second);
+  assert.equal(secondSnapshot.status, 'completed');
+});
