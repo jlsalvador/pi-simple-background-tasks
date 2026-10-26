@@ -15,7 +15,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { resolveShellPolicy } from '../src/core/common.js';
+import { formatSnapshotList, resolveShellPolicy, type BgTaskSnapshot } from '../src/core/common.js';
 import {
   awaitSettled,
   IS_WIN,
@@ -222,4 +222,28 @@ test('adoption is session-scoped: other sessions never see this session tasks', 
   );
   assert.equal(other.registry.allTasks().length, 0);
   await registry.stopTask(registry.resolveTask(task.id), 'user');
+});
+
+test('formatSnapshotList orders by endTime ?? startTime, oldest first', () => {
+  const fixture = (id: string, startTime: number, endTime?: number): BgTaskSnapshot => ({
+    id,
+    command: `cmd-${id}`,
+    status: 'completed',
+    outputPath: `/tmp/${id}.output`,
+    cwd: '/tmp',
+    startTime,
+    endTime,
+    bytesWritten: 0,
+    notified: true,
+    notifyOnCompletion: true,
+    triggerOnCompletion: false,
+  });
+  const base = 1_000;
+  const list = formatSnapshotList([
+    fixture('bbb', base + 100),
+    fixture('ccc', base + 50, base + 60),
+    fixture('aaa', base),
+  ]);
+  assert.ok(list.indexOf('aaa') < list.indexOf('ccc'), list);
+  assert.ok(list.indexOf('ccc') < list.indexOf('bbb'), list);
 });

@@ -686,7 +686,10 @@ export function snapshot(task: BgTask): BgTaskSnapshot {
 
 export function formatSnapshotList(tasks: BgTaskSnapshot[], now = Date.now()): string {
   if (tasks.length === 0) return 'No background tasks in this Pi extension runtime.';
-  return tasks
+  const ordered = [...tasks].sort(
+    (a, b) => (a.endTime ?? a.startTime) - (b.endTime ?? b.startTime),
+  );
+  return ordered
     .map((task) => {
       const statusIcon =
         task.status === 'running'

@@ -107,13 +107,7 @@ function taskAge(task: BgTask, now = Date.now()): string {
 }
 
 function sortTasksForUi(tasks: BgTask[]): BgTask[] {
-  const rank = (task: BgTask) =>
-    task.status === 'running' ? 0 : task.status === 'failed' ? 1 : task.status === 'killed' ? 2 : 3;
-  return [...tasks].sort((a, b) => {
-    const rankDiff = rank(a) - rank(b);
-    if (rankDiff !== 0) return rankDiff;
-    return (b.endTime ?? b.startTime) - (a.endTime ?? a.startTime);
-  });
+  return [...tasks].sort((a, b) => (b.endTime ?? b.startTime) - (a.endTime ?? a.startTime));
 }
 
 export type TaskManagerResult = 'closed';
