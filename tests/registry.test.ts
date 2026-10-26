@@ -179,3 +179,36 @@ test('cleanup prunes the run dir and the next startTask recreates it', async () 
   const secondSnapshot = await awaitSettled(registry, second);
   assert.equal(secondSnapshot.status, 'completed');
 });
+
+test('resolveTask accepts the task name, unique name prefixes and the ID', async () => {
+  const { registry } = makeRegistry(dir);
+  const task = await registry.startTask(ctx, sleeperCommand(125, 'named-resolve'), {
+    name: 'Two Discs Diag',
+  });
+  try {
+    assert.equal(registry.resolveTask(task.id).id, task.id, 'exact ID');
+    assert.equal(registry.resolveTask(task.id.slice(0, 5)).id, task.id, 'unique ID prefix');
+    assert.equal(registry.resolveTask('Two Discs Diag').id, task.id, 'exact name');
+    assert.equal(registry.resolveTask('two discs diag').id, task.id, 'case-insensitive name');
+    assert.equal(registry.resolveTask('two discs').id, task.id, 'unique name prefix');
+  } finally {
+    await registry.stopTask(registry.resolveTask(task.id), 'user');
+  }
+});
+
+test('resolveTask reports ambiguous names and unknown queries', async () => {
+  const { registry } = makeRegistry(dir);
+  const a = await registry.startTask(ctx, sleeperCommand(125, 'ambig-a'), {
+    name: 'Diag Pair One',
+  });
+  const b = await registry.startTask(ctx, sleeperCommand(125, 'ambig-b'), {
+    name: 'Diag Pair Two',
+  });
+  try {
+    assert.throws(() => registry.resolveTask('diag pair'), /Ambiguous task name prefix/);
+    assert.throws(() => registry.resolveTask('no such task name'), /Unknown background task/);
+  } finally {
+    await registry.stopTask(registry.resolveTask(a.id), 'user');
+    await registry.stopTask(registry.resolveTask(b.id), 'user');
+  }
+});

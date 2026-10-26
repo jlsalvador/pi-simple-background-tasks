@@ -152,6 +152,7 @@ function noopOnChange(): void {}
 /** Strictly serializable fields adopted from a previous run's metadata file. */
 type PersistedTaskRecord = {
   status?: unknown;
+  readonly name?: string | undefined;
   readonly command: string;
   readonly cwd: string;
   readonly startTime: number;
@@ -448,19 +449,42 @@ export class BackgroundTaskRegistry {
     }
   }
 
-  resolveTask(idOrPrefix: string): BgTask {
-    const id = idOrPrefix.trim();
-    if (!id) throw new Error('Task ID is required');
-    const exact = this.tasks.get(id);
+  /**
+   * Resolve a task by its ID, its name, or an unambiguous prefix of either.
+   * IDs win over names; name matching is case-insensitive.
+   */
+  resolveTask(idOrName: string): BgTask {
+    const query = idOrName.trim();
+    if (!query) throw new Error('Task ID is required');
+    const exact = this.tasks.get(query);
     if (exact) return exact;
-    const matches = [...this.tasks.values()].filter((task) => task.id.startsWith(id));
-    const onlyMatch = matches[0];
-    if (matches.length === 1 && onlyMatch) return onlyMatch;
-    if (matches.length > 1)
+
+    const tasks = [...this.tasks.values()];
+    const idMatches = tasks.filter((task) => task.id.startsWith(query));
+    const onlyId = idMatches[0];
+    if (idMatches.length === 1 && onlyId) return onlyId;
+    if (idMatches.length > 1)
       throw new Error(
-        `Ambiguous task ID prefix "${id}": ${matches.map((task) => task.id).join(', ')}`,
+        `Ambiguous task ID prefix "${query}": ${idMatches.map((task) => task.id).join(', ')}`,
       );
-    throw new Error(`Unknown background task ID: ${id}`);
+
+    const lower = query.toLowerCase();
+    const nameMatches = tasks.filter((task) => task.name.toLowerCase() === lower);
+    const onlyName = nameMatches[0];
+    if (nameMatches.length === 1 && onlyName) return onlyName;
+    if (nameMatches.length > 1)
+      throw new Error(
+        `Ambiguous task name "${query}": ${nameMatches.map((task) => task.id).join(', ')}`,
+      );
+    const prefixMatches = tasks.filter((task) => task.name.toLowerCase().startsWith(lower));
+    const onlyPrefix = prefixMatches[0];
+    if (prefixMatches.length === 1 && onlyPrefix) return onlyPrefix;
+    if (prefixMatches.length > 1)
+      throw new Error(
+        `Ambiguous task name prefix "${query}": ${prefixMatches.map((task) => task.id).join(', ')}`,
+      );
+
+    throw new Error(`Unknown background task "${query}" (no task ID, name, or prefix matches)`);
   }
 
   async stopTask(task: BgTask, kind: KillKind, reason?: string): Promise<BgTask> {
@@ -643,7 +667,10 @@ export class BackgroundTaskRegistry {
     const exitMarkerTrusted = dialect !== 'user-non-posix';
     return {
       id,
-      name: deriveTaskNameFromCommand(command),
+      name:
+        typeof record.name === 'string' && record.name.length > 0
+          ? record.name
+          : deriveTaskNameFromCommand(command),
       command,
       description: undefined,
       status: 'running',

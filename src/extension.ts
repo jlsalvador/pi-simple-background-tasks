@@ -118,13 +118,13 @@ const BgStatusParams = Type.Object({
   taskId: Type.Optional(
     Type.String({
       description:
-        'Optional task ID or unambiguous prefix. If omitted, all running/recent tasks are returned.',
+        'Optional task ID, task name, or unambiguous prefix of either. If omitted, all running/recent tasks of this session are returned.',
     }),
   ),
 });
 
 const BgLogsParams = Type.Object({
-  taskId: Type.String({ description: 'Task ID or unambiguous prefix' }),
+  taskId: Type.String({ description: 'Task ID, task name, or unambiguous prefix of either' }),
   maxBytes: Type.Optional(
     Type.Number({
       description: `Maximum bytes to return, capped at ${formatSize(MAX_LOG_BYTES)}. Default: ${formatSize(DEFAULT_LOG_BYTES)}.`,
@@ -138,7 +138,9 @@ const BgLogsParams = Type.Object({
 });
 
 const BgKillParams = Type.Object({
-  taskId: Type.String({ description: 'Task ID or unambiguous prefix to stop' }),
+  taskId: Type.String({
+    description: 'Task ID, task name, or unambiguous prefix of either, to stop',
+  }),
 });
 
 const BgCleanParams = Type.Object({
@@ -483,7 +485,7 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
   });
 
   pi.registerCommand('logs', {
-    description: 'Show bounded output from a background task: /logs <id> [maxBytes]',
+    description: 'Show bounded output from a background task: /logs <id or name> [maxBytes]',
     getArgumentCompletions: (prefix) => {
       const matches = registry
         .allTasks()
@@ -513,7 +515,7 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
   });
 
   pi.registerCommand('kill', {
-    description: 'Stop a running background task: /kill <id>',
+    description: 'Stop a running background task: /kill <id or name>',
     getArgumentCompletions: (prefix) => {
       const matches = registry
         .allTasks()
@@ -642,7 +644,7 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
       );
       return {
         content: textContent(
-          `Started background task ${taskDisplayName(task)} (${task.id})\nStatus: ${task.status}\nPID: ${String(task.pid ?? 'unknown')}\nOutput: ${task.outputPath}\n${completionDelivery.text}`,
+          `Started background task ${taskDisplayName(task)}\nTask ID: ${task.id} — bg_status/bg_logs/bg_kill accept this ID, the task name, or a unique prefix of either\nStatus: ${task.status}\nPID: ${String(task.pid ?? 'unknown')}\nOutput: ${task.outputPath}\n${completionDelivery.text}`,
         ),
         details: { task: registry.snapshot(task) },
       };
@@ -673,6 +675,7 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
       'Inspect point-in-time status for one or all background tasks; never poll it as a wait loop',
     promptGuidelines: [
       'Use bg_status for deliberate point-in-time inspection, not as a waiting primitive.',
+      'bg_status, bg_logs and bg_kill accept the task ID, the task name, or an unambiguous prefix of either.',
       'A running result is not an instruction to poll again. Do not repeatedly call bg_status while an automatic terminal notification is pending.',
       'Use bg_status when the user explicitly requests an update, automatic completion handling was disabled, or concrete evidence suggests a task is hung; terminal notifications do not need reconfirmation.',
     ],
@@ -744,8 +747,8 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     name: 'bg_kill',
     label: 'Background Kill',
     description:
-      'Stop a running background task by ID. Fails loudly if the task is unknown or already finished.',
-    promptSnippet: 'Stop a running background task by ID',
+      'Stop a running background task by ID or task name. Fails loudly if the task is unknown or already finished.',
+    promptSnippet: 'Stop a running background task by ID or task name',
     promptGuidelines: [
       'Use bg_kill when the user asks to stop a background task or when a bg_run command is no longer needed.',
     ],
