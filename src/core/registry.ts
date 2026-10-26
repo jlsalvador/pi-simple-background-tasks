@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { appendFile, mkdir, readdir, readFile, rm, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { formatSize } from '@earendil-works/pi-coding-agent';
 import {
   type BgLogsDetails,
@@ -318,11 +318,18 @@ export class BackgroundTaskRegistry {
     return summary;
   }
 
+  /**
+   * Sanitized session part of the run-dir name: every activation directory
+   * is `<session>-<pid>`, so a restart of the same session shares the part
+   * while other sessions' dirs do not match it.
+   */
+  private sessionRunNamePart(ctx: BackgroundTaskContext): string {
+    return sanitizePathSegment(ctx.sessionId ?? `session-${String(process.pid)}`);
+  }
   async ensureRuntimeDir(ctx: BackgroundTaskContext): Promise<RuntimeDir> {
     let dir = this.runtimeDir;
     if (dir === undefined) {
-      const sessionId = sanitizePathSegment(ctx.sessionId ?? `session-${String(process.pid)}`);
-      const runId = `${sessionId}-${String(process.pid)}`;
+      const runId = `${this.sessionRunNamePart(ctx)}-${String(process.pid)}`;
       const runtimeDirAbs = join(this.tasksDir, runId);
       dir = { abs: runtimeDirAbs, display: runtimeDirAbs };
     }
@@ -579,13 +586,21 @@ export class BackgroundTaskRegistry {
   // ---------- adoption: running tasks recorded on disk by an earlier activation ----------
 
   /**
-   * Scan the tasks folder for persisted records still marked `running` and
-   * either adopt them (process group alive), finalize them from their exit
-   * marker, or mark them failed (process gone without a marker). Runs on every
-   * activation, which is exactly what makes /reload and Pi restarts safe.
+   * Scan this session's persisted records for tasks still marked `running`
+   * and either adopt them (process group alive), finalize them from their
+   * exit marker, or mark them failed (process gone without a marker). Runs
+   * on every activation, which is exactly what makes /reload and Pi
+   * restarts safe. Only this session's run dirs (`<session>-<pid>`) are
+   * scanned: another live session's tasks stay its business, so its
+   * terminal notifications never reach this session. Two processes on the
+   * same session (pi does not lock session files: both would append to the
+   * same JSONL) both adopt and each notifies its own conversation —
+   * degenerate duplication, unchanged by this scoping.
    */
-  async reconcileTasksFromDisk(): Promise<number> {
-    const runDirs = await this.listRunDirs();
+  async reconcileTasksFromDisk(ctx: BackgroundTaskContext): Promise<number> {
+    const runDirs = (await this.listRunDirs()).filter(
+      (path) => basename(path).startsWith(`${this.sessionRunNamePart(ctx)}-`),
+    );
     let adopted = 0;
     for (const runDir of runDirs) {
       const ids = await this.listTaskIds(runDir);

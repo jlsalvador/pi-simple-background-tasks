@@ -134,8 +134,7 @@ test('detachment across a real parent exit, then adoption, external kill and del
   // The spawner process has long exited; both tasks must still be running.
   assert.equal(pidAlive(spawnIds.aPid), true);
   assert.equal(pidAlive(spawnIds.bPid), true);
-  assert.equal(await registry.reconcileTasksFromDisk(), 2);
-
+  assert.equal(await registry.reconcileTasksFromDisk(ctx), 2);
   // 1: externally killed orphan -> failed, no completion marker.
   killOrphanTree(spawnIds.aPid);
   const orphan = await awaitSettled(registry, { id: spawnIds.a });
@@ -151,7 +150,7 @@ test('detachment across a real parent exit, then adoption, external kill and del
 
   // 3: everything terminal on disk -> nothing left to adopt.
   const nextGeneration = makeRegistry(dir);
-  assert.equal(await nextGeneration.registry.reconcileTasksFromDisk(), 0);
+  assert.equal(await nextGeneration.registry.reconcileTasksFromDisk(ctx), 0);
 
   // 4: cleanup removes records together with their owner artifacts
   // (.exit marker, runner script): no file survives, run dirs are pruned.
@@ -211,4 +210,16 @@ test('resolveTask reports ambiguous names and unknown queries', async () => {
     await registry.stopTask(registry.resolveTask(a.id), 'user');
     await registry.stopTask(registry.resolveTask(b.id), 'user');
   }
+});
+
+test('adoption is session-scoped: other sessions never see this session tasks', async () => {
+  const { registry } = makeRegistry(dir);
+  const task = await registry.startTask(ctx, sleeperCommand(125, 'cross-session'));
+  const other = makeRegistry(dir);
+  assert.equal(
+    await other.registry.reconcileTasksFromDisk({ cwd: dir, sessionId: 'bg-test-other' }),
+    0,
+  );
+  assert.equal(other.registry.allTasks().length, 0);
+  await registry.stopTask(registry.resolveTask(task.id), 'user');
 });

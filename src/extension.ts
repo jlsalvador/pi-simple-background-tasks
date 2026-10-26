@@ -58,8 +58,9 @@ import {
  * - No Ctrl+B support for backgrounding an already-running built-in bash tool.
  * - Tasks always survive /reload and Pi restarts: every task spawns detached,
  *   its ownership facts live in its on-disk metadata, and each activation
- *   adopts still-running records from disk. Pi session shutdown kills all
- *   running tasks, so exit with care.
+ *   adopts the still-running records of this session from disk (other
+ *   sessions' tasks stay invisible). Pi session shutdown kills this
+ *   session's running tasks, so exit with care.
  * - No flag negotiates any of this: there is exactly one launch path.
  */
 
@@ -256,7 +257,7 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     await registry.ensureRuntimeDir(registryContext(ctx));
     if (disposed) return;
     try {
-      await registry.reconcileTasksFromDisk();
+      await registry.reconcileTasksFromDisk(registryContext(ctx));
     } catch (error) {
       console.error(
         '[background-tasks] failed to reconcile background tasks from disk:',

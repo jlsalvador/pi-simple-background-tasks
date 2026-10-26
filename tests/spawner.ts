@@ -26,7 +26,7 @@ const registry = new BackgroundTaskRegistry({
   pollIntervalMs: 250,
   sendCompletionNotification: () => {},
 });
-const a = await registry.startTask({ cwd: dir, sessionId: 's' }, sleeperCommand(125, `spw${tag}a`));
-const b = await registry.startTask({ cwd: dir, sessionId: 's' }, sleeperCommand(125, `spw${tag}b`));
+const a = await registry.startTask({ cwd: dir, sessionId: 'bg-test' }, sleeperCommand(125, `spw${tag}a`));
+const b = await registry.startTask({ cwd: dir, sessionId: 'bg-test' }, sleeperCommand(125, `spw${tag}b`));
 process.stdout.write(JSON.stringify({ a: a.id, b: b.id, aPid: a.pid, bPid: b.pid }));
 process.exit(0);
