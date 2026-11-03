@@ -220,6 +220,7 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     },
     publishTerminal: (task) => {
       eventService.publishTerminal(task);
+      refreshStatus();
     },
     shellPolicy,
     tasksDir: config.tasksDir,
@@ -228,6 +229,17 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     events: pi.events,
     registry,
   });
+
+  // Footer status: running tasks in the Pi footer; cleared when none run.
+  const STATUS_KEY = 'background-tasks';
+  let statusCtx: ExtensionContext | null = null;
+  const refreshStatus = (): void => {
+    const count = registry.allTasks().filter((task) => task.status === 'running').length;
+    statusCtx?.ui.setStatus(
+      STATUS_KEY,
+      count > 0 ? `◉ ${count} task${count === 1 ? '' : 's'} running` : undefined,
+    );
+  };
 
   const beginSessionShutdown = (): void => {
     if (disposed) return;
@@ -264,6 +276,8 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
         error instanceof Error ? error : new Error(String(error)),
       );
     }
+    statusCtx = ctx;
+    refreshStatus();
   });
 
   async function startTask(
@@ -271,7 +285,10 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
     command: string,
     options: StartTaskOptions = {},
   ): Promise<BgTask> {
-    return registry.startTask(registryContext(ctx), command, options);
+    statusCtx = ctx;
+    const task = await registry.startTask(registryContext(ctx), command, options);
+    refreshStatus();
+    return task;
   }
 
   async function openTaskManager(
@@ -426,6 +443,8 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
       }
     } finally {
       eventService.close();
+      statusCtx = ctx;
+      refreshStatus();
     }
   });
 
