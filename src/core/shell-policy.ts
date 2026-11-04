@@ -6,7 +6,7 @@ import {
   type ResolvedShellPolicy,
   resolveShellPolicy,
   type ShellPolicySnapshot,
-} from './common.js';
+} from './common.ts';
 
 export const SHELL_POLICY_SECTION = 'pi_background_shell_policy';
 const SHELL_POLICY_OPEN = `<${SHELL_POLICY_SECTION}>`;

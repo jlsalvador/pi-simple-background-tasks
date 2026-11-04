@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 import {
   BackgroundTaskRegistry,
   type BackgroundTaskRegistryOptions,
-} from '../src/core/registry.js';
+} from '../src/core/registry.ts';
 
 export const IS_WIN = process.platform === 'win32';
 

@@ -33,22 +33,22 @@ import {
   type StartTaskOptions,
   taskDisplayName,
   truncateChars,
-} from './core/common.js';
-import { resolveBackgroundTasksConfig } from './core/config.js';
+} from './core/common.ts';
+import { resolveBackgroundTasksConfig } from './core/config.ts';
 import {
   type BackgroundTaskExtensionService,
   installBackgroundTaskExtensionApi,
-} from './core/extension-api.js';
-import { LazyModule, SynchronousActivationCloseFence } from './core/lazy-module.js';
-import { type BackgroundTaskContext, BackgroundTaskRegistry } from './core/registry.js';
-import { createShellPolicyGuidanceHandler, initializeShellPolicy } from './core/shell-policy.js';
-import type { CleanupScope, CleanupSummary } from './core/task-cleanup.js';
+} from './core/extension-api.ts';
+import { LazyModule, SynchronousActivationCloseFence } from './core/lazy-module.ts';
+import { type BackgroundTaskContext, BackgroundTaskRegistry } from './core/registry.ts';
+import { createShellPolicyGuidanceHandler, initializeShellPolicy } from './core/shell-policy.ts';
+import type { CleanupScope, CleanupSummary } from './core/task-cleanup.ts';
 import {
   type BackgroundTaskForUi,
   type BackgroundTasksManager,
   FULLSCREEN_MARGINS,
   type TaskManagerOptions,
-} from './ui/background-tasks-manager.js';
+} from './ui/background-tasks-manager.ts';
 
 /**
  * Project-local Pi background task manager.
@@ -207,7 +207,7 @@ export default async function backgroundTasksExtension(pi: ExtensionAPI): Promis
   let disposed = false;
   let shutdownReason = 'shutdown';
   const activationCloseFence = new SynchronousActivationCloseFence();
-  const taskManagerLoader = new LazyModule(() => import('./ui/background-tasks-manager.js'));
+  const taskManagerLoader = new LazyModule(() => import('./ui/background-tasks-manager.ts'));
 
   const registryContext = (ctx: ExtensionContext): BackgroundTaskContext => ({
     cwd: ctx.cwd,

@@ -1,6 +1,6 @@
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { replaceFileDurable, writeFileDurable } from './durable-fs.js';
+import { replaceFileDurable, writeFileDurable } from './durable-fs.ts';
 
 function signalError(signal: AbortSignal): Error {
   const reason: unknown = signal.reason;

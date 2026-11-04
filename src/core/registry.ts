@@ -23,22 +23,22 @@ import {
   type TaskStatus,
   type TerminalPublicationAbandonReason,
   taskDisplayName,
-} from './common.js';
-import { defaultTasksDir } from './config.js';
-import type { DetachedSpawnFn } from './detached-spawn.js';
-import { exitMarkerPath, runnerScriptPath, spawnDetachedTask } from './detached-spawn.js';
-import { BackgroundTaskExtensionServiceClosedError } from './extension-api.js';
+} from './common.ts';
+import { defaultTasksDir } from './config.ts';
+import type { DetachedSpawnFn } from './detached-spawn.ts';
+import { exitMarkerPath, runnerScriptPath, spawnDetachedTask } from './detached-spawn.ts';
+import { BackgroundTaskExtensionServiceClosedError } from './extension-api.ts';
 import {
   type CleanupScope,
   type CleanupSummary,
   cleanupFinishedTasks as cleanupTasksOnDisk,
-} from './task-cleanup.js';
-import { writeJsonAtomic } from './task-durable.js';
+} from './task-cleanup.ts';
+import { writeJsonAtomic } from './task-durable.ts';
 import {
   runWindowsTaskkill,
   type TaskkillOutcome,
   type WindowsTaskkillOptions,
-} from './windows-taskkill.js';
+} from './windows-taskkill.ts';
 
 export const KILL_GRACE_MS = 3000;
 export const STOP_WAIT_MS = KILL_GRACE_MS + 1500;
@@ -598,8 +598,8 @@ export class BackgroundTaskRegistry {
    * degenerate duplication, unchanged by this scoping.
    */
   async reconcileTasksFromDisk(ctx: BackgroundTaskContext): Promise<number> {
-    const runDirs = (await this.listRunDirs()).filter(
-      (path) => basename(path).startsWith(`${this.sessionRunNamePart(ctx)}-`),
+    const runDirs = (await this.listRunDirs()).filter((path) =>
+      basename(path).startsWith(`${this.sessionRunNamePart(ctx)}-`),
     );
     let adopted = 0;
     for (const runDir of runDirs) {

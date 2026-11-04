@@ -16,7 +16,7 @@ import {
   formatDuration,
   taskDisplayName,
   truncateChars,
-} from '../core/common.js';
+} from '../core/common.ts';
 
 export interface TaskManagerTheme {
   fg: Theme['fg'];

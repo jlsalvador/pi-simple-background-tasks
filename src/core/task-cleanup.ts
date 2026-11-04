@@ -1,7 +1,7 @@
 import { readdir, readFile, rm, rmdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { TERMINAL_TASK_STATUS_VALUES } from './common.js';
-import { EXIT_MARKER_SUFFIX, RUNNER_SCRIPT_SUFFIX } from './detached-spawn.js';
+import { TERMINAL_TASK_STATUS_VALUES } from './common.ts';
+import { EXIT_MARKER_SUFFIX, RUNNER_SCRIPT_SUFFIX } from './detached-spawn.ts';
 
 export type CleanupScope = 'one' | 'session' | 'all';
 

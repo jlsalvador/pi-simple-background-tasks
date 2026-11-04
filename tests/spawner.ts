@@ -11,8 +11,8 @@
  * - BG_SPAWNER_TAG: unique tag to keep concurrent runs apart (required)
  */
 import { mkdirSync } from 'node:fs';
-import { BackgroundTaskRegistry } from '../src/core/registry.js';
-import { sleeperCommand } from './test-utils.js';
+import { BackgroundTaskRegistry } from '../src/core/registry.ts';
+import { sleeperCommand } from './test-utils.ts';
 
 const dir = process.env.BG_TEST_DIR;
 const tag = process.env.BG_SPAWNER_TAG;
@@ -26,7 +26,13 @@ const registry = new BackgroundTaskRegistry({
   pollIntervalMs: 250,
   sendCompletionNotification: () => {},
 });
-const a = await registry.startTask({ cwd: dir, sessionId: 'bg-test' }, sleeperCommand(125, `spw${tag}a`));
-const b = await registry.startTask({ cwd: dir, sessionId: 'bg-test' }, sleeperCommand(125, `spw${tag}b`));
+const a = await registry.startTask(
+  { cwd: dir, sessionId: 'bg-test' },
+  sleeperCommand(125, `spw${tag}a`),
+);
+const b = await registry.startTask(
+  { cwd: dir, sessionId: 'bg-test' },
+  sleeperCommand(125, `spw${tag}b`),
+);
 process.stdout.write(JSON.stringify({ a: a.id, b: b.id, aPid: a.pid, bPid: b.pid }));
 process.exit(0);

@@ -15,7 +15,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { formatSnapshotList, resolveShellPolicy, type BgTaskSnapshot } from '../src/core/common.js';
+import { type BgTaskSnapshot, formatSnapshotList, resolveShellPolicy } from '../src/core/common.ts';
 import {
   awaitSettled,
   IS_WIN,
@@ -24,7 +24,7 @@ import {
   pidAlive,
   runSpawner,
   sleeperCommand,
-} from './test-utils.js';
+} from './test-utils.ts';
 
 const dir = join(mkdtempSync(join(tmpdir(), 'bg-registry-tests-')), 'tasks');
 const ctx = { cwd: dir, sessionId: 'bg-test' };

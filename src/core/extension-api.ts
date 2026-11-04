@@ -1,6 +1,6 @@
 import type { EventBus } from '@earendil-works/pi-coding-agent';
-import type { BgTaskSnapshot } from './common.js';
-import type { BackgroundTaskRegistry } from './registry.js';
+import type { BgTaskSnapshot } from './common.ts';
+import type { BackgroundTaskRegistry } from './registry.ts';
 
 export const BG_TERMINAL_CHANNEL = 'pi-background-tasks:terminal:v1';
 export const BG_TERMINAL_SCHEMA = 'pi-background-tasks.extension-terminal.v1';

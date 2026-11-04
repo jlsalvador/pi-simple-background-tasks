@@ -1,9 +1,9 @@
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process';
 import { closeSync, openSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { type ResolvedShellPolicy, shellQuote } from './common.js';
-import { writeFileFsynced } from './task-durable.js';
-import { createProcessViaWmi } from './windows-wmi-spawn.js';
+import { type ResolvedShellPolicy, shellQuote } from './common.ts';
+import { writeFileFsynced } from './task-durable.ts';
+import { createProcessViaWmi } from './windows-wmi-spawn.ts';
 
 /**
  * Detached background-task spawning: the single launch path used by every task.
