@@ -46,8 +46,6 @@ export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   name: string;
   outputAbsPath: string;
   metadataAbsPath: string;
-  eventsAbsPath?: string | undefined;
-  stderrAbsPath?: string | undefined;
   /** POSIX group authority captured at spawn; never restored except by adoption. */
   ownedPosixProcessGroupId?: number | undefined;
   /** One-way latch preventing any later signal after group authority is released. */
@@ -686,6 +684,8 @@ export function snapshot(task: BgTask): BgTaskSnapshot {
 
 export function formatSnapshotList(tasks: BgTaskSnapshot[], now = Date.now()): string {
   if (tasks.length === 0) return 'No background tasks in this Pi extension runtime.';
+  // Oldest first on purpose: this list is read top-to-bottom by the model as a log. The
+  // TUI overlay sorts the other way (newest first) because there the newest row matters.
   const ordered = [...tasks].sort(
     (a, b) => (a.endTime ?? a.startTime) - (b.endTime ?? b.startTime),
   );
