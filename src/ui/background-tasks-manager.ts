@@ -538,10 +538,7 @@ export class BackgroundTasksManager implements Component {
     const bottom = blueBorder(`╰${'─'.repeat(inner)}╯`);
     const row = (content = '') =>
       `${blueBorder('│')}${padAnsi(truncateToWidth(content, inner), inner)}${blueBorder('│')}`;
-    const subtitleLine = subtitle
-      ? lightBlue(padAnsi(` ${subtitle}`, inner))
-      : lightBlue(' '.repeat(inner));
-    const lines = [top, row(subtitleLine), row()];
+    const lines = subtitle ? [top, row(lightBlue(padAnsi(` ${subtitle}`, inner))), row()] : [top];
     for (const line of body) lines.push(row(line));
     lines.push(row());
     const footerWidth = Math.max(1, inner - 1);
@@ -596,7 +593,7 @@ export class BackgroundTasksManager implements Component {
       ? [`${formatCount(allRunning)} active`, `${formatCount(historyCount)} history`]
       : allRunning > 0
         ? [`${formatCount(allRunning)} active shell${pluralSuffix(allRunning)}`]
-        : ['No active shells'];
+        : [];
     const subtitle = subtitleParts.join(' · ');
 
     const body: string[] = [];
@@ -604,17 +601,17 @@ export class BackgroundTasksManager implements Component {
       this.theme.fg('dim', this.listHelp(tasks[this.selectedIndex], allRunning, historyCount)),
       Math.max(1, width - 3),
     ).length;
-    let listRows = this.computeListRows(footerLines, false, !!this.actionMessage);
+    let listRows = this.computeListRows(footerLines, !!subtitle, false, !!this.actionMessage);
     if (tasks.length > listRows)
-      listRows = this.computeListRows(footerLines, true, !!this.actionMessage);
+      listRows = this.computeListRows(footerLines, !!subtitle, true, !!this.actionMessage);
     this.listVisibleRows = listRows;
     if (tasks.length === 0) {
       const message =
         allTasks.length === 0
-          ? '  No background tasks in this session.'
+          ? ' No background tasks in this session.'
           : this.showHistory
-            ? '  No background tasks in this view.'
-            : '  No running background tasks. Press h to show recent history.';
+            ? ' No background tasks in this view.'
+            : ' No running background tasks. Press h to show recent history.';
       body.push(this.theme.fg('dim', message));
     } else {
       const maxNameWidth = Math.max(12, width - 78);
@@ -734,9 +731,14 @@ export class BackgroundTasksManager implements Component {
   }
 
   /** Task rows the list box can show: 14 in normal mode, or the height left in fullscreen. */
-  private computeListRows(footerLines: number, hasShowing: boolean, hasAction: boolean): number {
+  private computeListRows(
+    footerLines: number,
+    hasSubtitle: boolean,
+    hasShowing: boolean,
+    hasAction: boolean,
+  ): number {
     if (!this.fullscreen) return LIST_VISIBLE_ROWS;
-    const fixed = 5 + footerLines + (hasShowing ? 1 : 0) + (hasAction ? 1 : 0);
+    const fixed = (hasSubtitle ? 5 : 4) + footerLines + (hasShowing ? 1 : 0) + (hasAction ? 1 : 0);
     const available = this.terminalRows() - FULLSCREEN_MARGINS.top - FULLSCREEN_MARGINS.bottom;
     return Math.max(1, available - fixed);
   }
